@@ -79,6 +79,33 @@ fn node_path() -> String {
     text.lines().next().unwrap().trim().to_string()
 }
 
+/// 当前进程是否跑在可交互窗口站（有真实桌面）。
+/// CI runner（GitHub Actions）以服务身份跑在 Session 0，没有可视桌面：
+/// CREATE_NEW_CONSOLE 的控制台窗口永远不可见，对照组断言在无头环境不可能成立。
+#[cfg(windows)]
+fn running_interactive() -> bool {
+    use windows_sys::Win32::System::StationsAndDesktops::{
+        GetProcessWindowStation, GetUserObjectInformationW, USEROBJECTFLAGS, UOI_FLAGS,
+    };
+    const WSF_VISIBLE: u32 = 1; // windows-sys 未导出该常量
+    unsafe {
+        let hwinsta = GetProcessWindowStation();
+        let mut flags: USEROBJECTFLAGS = std::mem::zeroed();
+        let mut needed = 0u32;
+        if GetUserObjectInformationW(
+            hwinsta,
+            UOI_FLAGS,
+            &mut flags as *mut _ as *mut _,
+            std::mem::size_of::<USEROBJECTFLAGS>() as u32,
+            &mut needed,
+        ) == 0
+        {
+            return false;
+        }
+        flags.dwFlags & WSF_VISIBLE != 0
+    }
+}
+
 /// Windows 上子进程必须不携带可见控制台窗口（CREATE_NO_WINDOW）。
 /// 回归测试：spawn 一个存活的 node 进程，断言它没有可见的控制台窗口。
 #[cfg(windows)]
@@ -106,11 +133,17 @@ async fn spawned_child_has_no_visible_console_window() {
 /// 对照组：CREATE_NEW_CONSOLE 必然产生可见控制台窗口。
 /// 若此测试失败，说明上面的“无可见窗口”断言不可信（检测手段失效）。
 /// 注意：运行该测试会在屏幕上短暂弹出一个控制台窗口，属正常现象。
+/// 无头会话（CI Session 0 服务）没有可视桌面，对照组前提不成立，显式跳过。
 #[cfg(windows)]
 #[test]
 fn spawned_child_with_new_console_has_visible_window() {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_CONSOLE: u32 = 0x00000010;
+
+    if !running_interactive() {
+        eprintln!("非交互会话（无可视桌面，如 CI runner），跳过对照组");
+        return;
+    }
 
     let mut child = std::process::Command::new(node_path())
         .arg("-e")
