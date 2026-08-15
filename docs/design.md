@@ -7,9 +7,9 @@
 
 DSHDesktop is a **Windows desktop shell** for [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh, DeepSeek's agent harness CLI, npm package `@deepseek-ai/dsh`).
 
-dsh itself ships a `dsh web` command that serves a Web UI on 127.0.0.1. But using it requires installing Node.js 22+, installing dsh globally, and keeping a terminal around — too much friction for end users. DSHDesktop packages all of that into a double-clickable desktop app:
+dsh itself ships a `dsh web` command that serves a Web UI on 127.0.0.1. But using it requires installing Node.js 22+, installing dsh globally, and keeping a terminal around. That is too much friction for end users. DSHDesktop packages all of that into a double-clickable desktop app:
 
-- The installer bundles a portable Node.js runtime and dsh (with all production dependencies) — **zero prerequisites on the user's machine** (just Windows 10/11 x64; the installer downloads WebView2 automatically if missing);
+- The installer bundles a portable Node.js runtime and dsh (with all production dependencies). The result is **zero prerequisites on the user's machine**: Windows 10/11 x64, with WebView2 downloaded automatically by the installer if missing;
 - On launch it spawns `dsh web`, and once ready, opens the official Web UI inside the app window;
 - Tray-resident, close-to-tray, automatic crash restart, native notifications for dsh events, and a title bar that follows dsh's theme setting.
 
@@ -71,10 +71,10 @@ DSHDesktop\
 
 ## 4. Startup sequence
 
-1. **Plugin init**: `single_instance` must be registered first — a second launch focuses the existing main window instead of spawning again.
+1. **Plugin init**: `single_instance` must be registered first, so that a second launch focuses the existing main window instead of spawning again.
 2. **setup**: build the tray → register `BootstrapInfo` (bootstrap-error fallback) → locate the bundled runtime via `resource_dir`.
 3. **First-launch detection**: if `dsh-home` doesn't exist before ensure_runtime, this is the first launch (the splash uses this to choose between the progress bar and plain text).
-4. **ensure_runtime** (§5): on failure the app does **not** exit — the error is stored in `BootstrapInfo` and emitted as `dsh-progress` (stage=error), leaving the window on the splash page showing the error. (The frontend actively queries `get_bootstrap_error` because the error event may be emitted before the frontend's listener registers.)
+4. **ensure_runtime** (§5): on failure the app does **not** exit. Instead, the error is stored in `BootstrapInfo` and emitted as `dsh-progress` (stage=error), leaving the window on the splash page showing the error. (The frontend actively queries `get_bootstrap_error` because the error event may be emitted before the frontend's listener registers.)
 5. **spawn_theme_follower**: colors the title bar once from the system theme immediately, then polls every 2s.
 6. **spawn_supervised**: invoked via `tauri::async_runtime::block_on` (there is no tokio context inside `setup`, and the supervision loop's `tokio::spawn` needs one). State machine: `Starting → Ready{port}`.
 7. **Event bridge** (`bridge_event` in lib.rs): every `dsh-progress` event carries a structured payload `{stage, message, percent}` (progress.rs), with percents computed backend-side from stage weights:
@@ -85,9 +85,9 @@ DSHDesktop\
    - every event is also appended to `events.log`.
 8. Once dsh is ready, the WS subscriber connects to `/api/events.mux` and the app reaches steady state.
 
-## 5. Runtime management (runtime.rs)
+## 5. Runtime management
 
-**Background**: the installer places the runtime verbatim at `<install>\runtime\windows-x64\` (via tauri.conf `resources: ["runtime"]`, a relative-path mapping). The original design copied the whole runtime to `%LOCALAPPDATA%` on first launch (to survive read-only install dirs) — at the cost of doubling the installed size (~+230MB).
+**Background**: the installer places the runtime verbatim at `<install>\runtime\windows-x64\` (via tauri.conf `resources: ["runtime"]`, a relative-path mapping). The original design copied the whole runtime to `%LOCALAPPDATA%` on first launch (to survive read-only install dirs), at the cost of doubling the installed size (~+230MB).
 
 **Current two-tier strategy**:
 
@@ -105,11 +105,11 @@ ensure_runtime(source_dir, app_version):
 ```
 
 - **Working directory decoupled from the runtime**: dsh's cwd is always `%LOCALAPPDATA%\DSHDesktop` (writable), so even in-place mode never pollutes the install dir.
-- **Legacy cleanup only trusts the `.version` marker** — a file we wrote ourselves — so user data is never deleted by mistake.
+- **Legacy cleanup only trusts the `.version` marker**, a file we wrote ourselves, so user data is never deleted by mistake.
 
-**Pitfall (fixed; do not regress)**: Tauri's `app.path().resource_dir()` returns a `\\?\`-prefixed verbatim path on Windows (e.g. `\\?\F:\DSHDesktop\...`). Node's module loader does not understand these — it treats the leading `\\?\F:` segment as a drive-relative path and crashes resolving the entry point with `EISDIR: illegal operation on a directory, lstat 'F:'`. `strip_verbatim` strips the prefix only when the remainder is a drive-letter absolute path (`\\?\UNC\...` is left alone), matching `dunce::simplified`'s conservative policy. **Any path handed to Node must come from ensure_runtime — never assemble one yourself elsewhere.**
+**Pitfall (fixed; do not regress)**: Tauri's `app.path().resource_dir()` returns a `\\?\`-prefixed verbatim path on Windows (e.g. `\\?\F:\DSHDesktop\...`). Node's module loader does not understand these: it treats the leading `\\?\F:` segment as a drive-relative path and crashes resolving the entry point with `EISDIR: illegal operation on a directory, lstat 'F:'`. `strip_verbatim` strips the prefix only when the remainder is a drive-letter absolute path (`\\?\UNC\...` is left alone), matching `dunce::simplified`'s conservative policy. **Any path handed to Node must come from ensure_runtime. Never assemble one yourself elsewhere.**
 
-## 6. Process supervision (process.rs + port.rs)
+## 6. Process supervision
 
 `DshProcess::spawn_supervised` runs a tokio supervision loop with this state machine:
 
@@ -123,11 +123,11 @@ Failed (no more auto-restarts; manual restart               → back to Starting
 ```
 
 - **Spawn**: `node bin.js web --port <port>`, env `DSH_HOME=<home>`, cwd `%LOCALAPPDATA%\DSHDesktop`, stdout/stderr piped into `LogRing` + the event stream, `kill_on_drop(true)`, plus `CREATE_NO_WINDOW` via `Platform::configure_child_command` (no console window pops up).
-- **Ports**: `free_port()` asks the OS for a free port — there's a race window between allocation and use, covered by "kill on readiness timeout, retry with another port"; `wait_ready` polls `http://127.0.0.1:<port>/` until it gets **any** HTTP response (200 not required).
-- **stop/restart**: two `tokio::sync::Notify`. stop sets the shutdown flag and notifies; the loop kills the process tree (`taskkill /T /F` — dsh may spawn grandchildren like python) and lands in `Stopped`. restart notifies the live loop to cycle immediately, or re-spawns a supervision loop if the old one already exited (Failed/Stopped).
+- **Ports**: `free_port()` asks the OS for a free port. There is a race window between allocation and use, covered by "kill on readiness timeout, retry with another port"; `wait_ready` polls `http://127.0.0.1:<port>/` until it gets **any** HTTP response (200 not required).
+- **stop/restart**: two `tokio::sync::Notify`. stop sets the shutdown flag and notifies; the loop kills the process tree (`taskkill /T /F`, since dsh may spawn grandchildren like python) and lands in `Stopped`. restart notifies the live loop to cycle immediately, or re-spawns a supervision loop if the old one already exited (Failed/Stopped).
 - **tokio traps**: `Child::kill()` returns a future that does nothing unless awaited; a leaked child that inherited the stdout pipe keeps the pipe open and any outer task waiting for EOF hangs forever (an integration test once appeared to "hang" for exactly this reason). All child paths must use `kill_on_drop` + explicit `child.wait().await` + fully-nulled stdio in tests.
 
-## 7. Event notifications (notify/)
+## 7. Event notifications
 
 ```
 dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summarize ──▶ NotifySink
@@ -136,27 +136,27 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
 ```
 
 - dsh event frames: `{"type":"server-request","method":"approval/requested","payload":{...}}`. A plain GET on the endpoint returns 426 (WS only).
-- Only two event kinds pass the filter — the ones that need the user's attention: `approval/requested` (awaiting approval) and `question/requested` (awaiting an answer).
+- Only two event kinds pass the filter, the ones that need the user's attention: `approval/requested` (awaiting approval) and `question/requested` (awaiting an answer).
 - dsh's browser trust fence allows loopback + Origin-less requests, which a Rust client satisfies naturally.
 - **The adapter is intentional**: the `NotifySource` trait isolates the unstable upstream API; alternatives (e.g. a `FileWatchSource` parsing session jsonl) can be added later.
 - The sink only shows a notification while the main window is hidden (tray state), to avoid interrupting a user who is actively looking at the app.
 
-## 8. Theme following (theme.rs)
+## 8. Theme following
 
 Goal: when dsh's `ui-theme.preference` (light/dark/system, stored in `$DSH_HOME/settings.yaml`) changes, every app window's title bar follows.
 
 - **2s polling** of the settings file (tiny file, rare changes; polling is simpler than inotify and identical cross-platform); `system` resolves via the registry value `AppsUseLightTheme`.
-- **BOM trap (fixed; do not regress)**: PowerShell 5.1's `Set-Content -Encoding utf8` writes a UTF-8 BOM, and yaml-rust rejects BOMs — the parse failure **silently falls back to the system theme**, which presented as "the title bar is stuck white". `read_theme_preference` strips the BOM before parsing. Lesson: **never rewrite settings.yaml with PowerShell**.
+- **BOM trap (fixed; do not regress)**: PowerShell 5.1's `Set-Content -Encoding utf8` writes a UTF-8 BOM, and yaml-rust rejects BOMs, so the parse failure **silently falls back to the system theme**, which presented as "the title bar is stuck white". `read_theme_preference` strips the BOM before parsing. Lesson: **never rewrite settings.yaml with PowerShell**.
 - **Windows two-pronged application**:
-  1. `window.set_theme()` syncs tao's internal theme state — otherwise tao may overwrite the visual effect with its cached stale state on the next window event. Calls on hidden windows can error or even panic, so they're wrapped in `catch_unwind`;
-  2. `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE=20)` directly on the HWND — cache-free, idempotent, works on hidden windows; this is the authoritative source of title-bar color. If attribute 20 fails (E_INVALIDARG), fall back to the legacy value 19 (pre-20H1 Windows 10).
-- **Known limitation**: on Windows 10 a dark title bar is **pure black when focused, dark gray when unfocused** — that's system behavior; `DWMWA_CAPTION_COLOR`(35)/`DWMWA_TEXT_COLOR`(36) only exist on Windows 11. A constant dsh-gray (#1B1B1C) bar would require a frameless window plus a custom title bar injected via `initialization_script` — deferred.
+  1. `window.set_theme()` syncs tao's internal theme state. Otherwise tao may overwrite the visual effect with its cached stale state on the next window event. Calls on hidden windows can error or even panic, so they're wrapped in `catch_unwind`;
+  2. `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE=20)` directly on the HWND: cache-free, idempotent, and effective on hidden windows; this is the authoritative source of title-bar color. If attribute 20 fails (E_INVALIDARG), fall back to the legacy value 19 (pre-20H1 Windows 10).
+- **Known limitation**: on Windows 10 a dark title bar is **pure black when focused, dark gray when unfocused**. That is system behavior; `DWMWA_CAPTION_COLOR`(35)/`DWMWA_TEXT_COLOR`(36) only exist on Windows 11. A constant dsh-gray (#1B1B1C) bar would require a frameless window plus a custom title bar injected via `initialization_script`. Deferred.
 
-## 9. Frontend (src/) and window management
+## 9. Frontend and window management
 
 The shell has exactly two local pages, routed by **hash** (`App.svelte` listens to `hashchange`):
 
-- `#/` (default) **Splash.svelte**: the startup page. On mount it first `invoke('get_bootstrap_error')` for any bootstrap error and `invoke('is_first_launch')` for the first-launch flag, then listens to the structured `dsh-progress`. **On first launch** it shows a stage-based progress bar (percent number + a ✓/●/○ step checklist): the backend supplies percent floors for the runtime/starting stages; during `starting` the frontend eases asymptotically toward 95% (dsh exposes no finer progress — the easing is presentation-only and never tops out), and `ready` pins it to 100%. **On subsequent launches** it keeps plain text plus an indeterminate bar. Once dsh is ready, **the Rust side** navigates the main window to the dsh UI — the frontend never navigates itself.
+- `#/` (default) **Splash.svelte**: the startup page. On mount it first `invoke('get_bootstrap_error')` for any bootstrap error and `invoke('is_first_launch')` for the first-launch flag, then listens to the structured `dsh-progress`. **On first launch** it shows a stage-based progress bar (percent number + a ✓/●/○ step checklist): the backend supplies percent floors for the runtime/starting stages; during `starting` the frontend eases asymptotically toward 95% (dsh exposes no finer progress; the easing is presentation-only and never tops out), and `ready` pins it to 100%. **On subsequent launches** it keeps plain text plus an indeterminate bar. Once dsh is ready, **the Rust side** navigates the main window to the dsh UI. The frontend never navigates itself.
 - `#/diagnostics` **Diagnostics.svelte**: the diagnostics panel (state/port/PID/version, a 500-line live log backfilled from the ring plus the `dsh-log` event stream, a restart button, an autostart toggle).
 
 Window behavior:
@@ -164,11 +164,11 @@ Window behavior:
 - Main window `main`: **close = hide to tray** (`CloseRequested` → `prevent_close` + `hide`); shown again via the tray menu or a second launch (single-instance plugin) with `show` + `unminimize` + `set_focus`.
 - Diagnostics window `diagnostics`: created on demand from the tray menu, **close = destroy**, recreated next time.
 - Tray "Quit": `stop()` dsh first, wait 1.5s for the supervision loop to kill the process tree, then `exit(0)`.
-- After navigating to the remote URL, the window title is overwritten by dsh's `document.title` — **external scripts must not locate the window by title** (match by PID + class name, see `scripts/shot-window.ps1`).
+- After navigating to the remote URL, the window title is overwritten by dsh's `document.title`, so **external scripts must not locate the window by title** (match by PID + class name, see `scripts/shot-window.ps1`).
 
 IPC commands (commands.rs, 7 total): `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`.
 
-## 10. Platform abstraction (platform/)
+## 10. Platform abstraction
 
 ```rust
 pub trait Platform: Send + Sync {
@@ -182,7 +182,7 @@ pub trait Platform: Send + Sync {
 }
 ```
 
-`mod.rs` carries `compile_error!` placeholders for macOS/Linux — adding a platform means the compiler forces you to implement the trait and wire up `current()`. The accompanying work: teach `scripts/fetch-runtime.ps1` to download Node for the new triplet, add dmg/appimage to tauri.conf `bundle.targets`, and uncomment the matrix rows in `.github/workflows/build.yml` (a checklist lives in the comments there). Title-bar coloring is `cfg(windows)`-branched in `theme.rs`; other platforms just use `set_theme`.
+`mod.rs` carries `compile_error!` placeholders for macOS/Linux, so adding a platform means the compiler forces you to implement the trait and wire up `current()`. The accompanying work: teach `scripts/fetch-runtime.ps1` to download Node for the new triplet, add dmg/appimage to tauri.conf `bundle.targets`, and uncomment the matrix rows in `.github/workflows/build.yml` (a checklist lives in the comments there). Title-bar coloring is `cfg(windows)`-branched in `theme.rs`; other platforms just use `set_theme`.
 
 ## 11. Packaging and distribution
 
@@ -201,9 +201,9 @@ output: src-tauri/runtime/windows-x64/ (gitignored, never committed)
 
 - generic: delete `test/tests/__tests__/docs/example/examples/coverage/.github`-style directories; delete `*.d.ts/*.map/*.md/LICENSE*/CHANGELOG*`-style files;
 - node-pty: keep only `prebuilds/win32-x64` (dropping darwin-*/win32-arm64 saves ~30MB), plus src/deps/third_party etc.;
-- `@img/sharp-wasm32` (9MB): unused when sharp's win32-x64 native package exists — deleted.
+- `@img/sharp-wasm32` (9MB): unused when sharp's win32-x64 native package exists, so it is deleted.
 
-Result: staging 344→227.9MB; installer **45.2MB**; installed **241.8MB** (the bulk is node.exe ~90MB plus dsh's dependency tree and node-pty's native terminal module — nothing left that's safe to cut).
+Result: staging 344 to 227.9 MB; installer **45.2 MB**; installed **241.8 MB** (the bulk is node.exe at ~90 MB plus dsh's dependency tree and node-pty's native terminal module; nothing left is safe to cut).
 
 ### Installer
 
@@ -212,7 +212,7 @@ Result: staging 344→227.9MB; installer **45.2MB**; installed **241.8MB** (the 
 - Silent install: `setup.exe /S` (add `/D=<dir>` for a custom directory). Before upgrading, uninstall the old version or terminate the running instance.
 - If GitHub is unreachable from the build machine, the NSIS download can be pre-seeded via a mirror into `%LOCALAPPDATA%\tauri\NSIS` (details in AGENTS.md).
 
-### CI / release
+### CI and release
 
 - `.github/workflows/build.yml`: on tag `v*` or manual dispatch → windows-latest: fetch-runtime → `cargo test` → `tauri build` → upload artifact.
 - `.github/workflows/release.yml`: on tag `v*`, builds and publishes the setup.exe plus its SHA256 straight to a GitHub Release.
@@ -225,7 +225,7 @@ Result: staging 344→227.9MB; installer **45.2MB**; installed **241.8MB** (the 
 | Rust unit tests (25) | runtime deploy/fallback/path normalization/copy-progress callback, progress stage weights & percent mapping, theme BOM parsing, notify filter & summary, LogRing eviction, port allocation & readiness, platform basics | `cd src-tauri && cargo test` |
 | Process integration (2, tests/process.rs) | with `tests/fixtures/fake-dsh.cjs` (a scriptable-crash fake dsh): ready→HTTP 200→stop, and crash→auto-restart→second Ready | same |
 | Notification integration (1, tests/notify_ws.rs) | a local WS server sends event frames; verifies filtering and port following | same |
-| Console-window regression (2, tests/console_window.rs) | positive: a CREATE_NO_WINDOW child has **no visible** ConsoleWindowClass window; control: a CREATE_NEW_CONSOLE child **has one** (proves the detector works — a real console window briefly flashes on screen, expected) | same |
+| Console-window regression (2, tests/console_window.rs) | positive: a CREATE_NO_WINDOW child has **no visible** ConsoleWindowClass window; control: a CREATE_NEW_CONSOLE child **has one** (proves the detector works; a real console window briefly flashes on screen, which is expected) | same |
 | End-to-end acceptance (scripts/acceptance.ps1) | uninstall old → silent install → launch → wait for dsh ready → single-instance / no visible console / theme / screenshots | `powershell -File scripts/acceptance.ps1 -SetupExe <exe>` |
 
 After touching process/notification/theme logic: run `cargo test` and one full acceptance pass on a fresh install.
@@ -236,7 +236,7 @@ After touching process/notification/theme logic: run `cargo test` and one full a
 
 - **Windows 10 dark title bar is pure black when focused**: system behavior, see §8. Path forward: frameless window + custom title bar (needs extra work for Win10 edge-snapping); deferred.
 - **Narrow notification coverage**: only approval/question events; expand once dsh's upstream API stabilizes.
-- **Pinned dsh version**: locked per app release (`-DshVersion` in fetch-runtime) — upgrading dsh means releasing a new app version. An in-app dsh channel selector is a possible future feature.
+- **Pinned dsh version**: locked per app release (`-DshVersion` in fetch-runtime), so upgrading dsh means releasing a new app version. An in-app dsh channel selector is a possible future feature.
 - **Windows x64 only**: the platform abstraction is ready; see the checklist in §10.
 
 ## 14. Appendix: upstream dsh facts (0.1.0-rc.6)

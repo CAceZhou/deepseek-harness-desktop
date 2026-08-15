@@ -78,7 +78,7 @@ DSHDesktop\
    - 每个事件同时追加到 `events.log`。
 8. dsh 就绪后，WS 订阅器连上 `/api/events.mux`，进入稳态。
 
-## 5. 运行时管理（runtime.rs）
+## 5. 运行时管理
 
 **背景**：安装包把运行时原样放在 `<install>\runtime\windows-x64\`（tauri.conf `resources: ["runtime"]` 做相对路径映射）。早期设计是首次启动时把整个运行时复制到 `%LOCALAPPDATA%`（防只读安装目录），代价是安装后体积翻倍（约 +230MB）。
 
@@ -101,7 +101,7 @@ ensure_runtime(source_dir, app_version):
 
 **坑（已修复，勿回退）**：Tauri 的 `app.path().resource_dir()` 在 Windows 上返回带 `\\?\` 扩展前缀的路径（如 `\\?\F:\DSHDesktop\...`）。Node 的模块加载器不认这种路径——它把 `\\?\F:` 的首段当成盘符相对路径，入口解析直接 `EISDIR: illegal operation on a directory, lstat 'F:'` 崩溃。`strip_verbatim` 只剥"剩余部分是盘符绝对路径"的形态（`\\?\UNC\...` 保留），与 `dunce::simplified` 的保守策略一致。**任何给 Node 的路径都必须经过 ensure_runtime，不要在别处自己拼。**
 
-## 6. 进程监督（process.rs + port.rs）
+## 6. 进程监督
 
 `DshProcess::spawn_supervised` 拉起一个 tokio 监督循环，状态机：
 
@@ -118,7 +118,7 @@ Failed（不再自动重启，前端/托盘可手动 restart）
 - **stop/restart**：两个 `tokio::sync::Notify`。stop 置 shutdown 标志并通知，循环杀掉进程树（`taskkill /T /F`，dsh 可能派生 python 等子孙）后进入 `Stopped`；restart 在循环存活时通知其立即重来，循环已退出（Failed/Stopped）时重新 spawn 一个监督循环。
 - **tokio 陷阱**：`Child::kill()` 返回 future，不 await 就不执行；泄漏的子进程若继承了 stdout 管道，外层等管道 EOF 会永远阻塞（集成测试曾因此假挂起）。所有子路径都必须 `kill_on_drop` + 显式 `child.wait().await` + 测试里 stdio 全 null。
 
-## 7. 事件通知（notify/）
+## 7. 事件通知
 
 ```
 dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summarize ──▶ NotifySink
@@ -132,7 +132,7 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
 - **适配层是有意为之**：`NotifySource` trait 隔离上游不稳定的接口，将来可加 `FileWatchSource`（解析 session jsonl）等替代实现。
 - sink 只在主窗口隐藏（托盘态）时弹通知，避免打扰正在操作的用户。
 
-## 8. 主题跟随（theme.rs）
+## 8. 主题跟随
 
 目标：dsh 设置里的 `ui-theme.preference`（light/dark/system，存于 `$DSH_HOME/settings.yaml`）变化时，应用所有窗口的标题栏跟着变。
 
@@ -143,7 +143,7 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
   2. 直接对 HWND 调 `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE=20)`——无缓存、幂等、对隐藏窗口同样生效，是标题栏颜色的权威来源。attr 20 失败（E_INVALIDARG）时回退旧值 19（Win10 20H1 之前）。
 - **已知限制**：Win10 上深色标题栏**聚焦时纯黑、失焦时深灰**是系统行为；`DWMWA_CAPTION_COLOR`(35)/`DWMWA_TEXT_COLOR`(36) 仅 Win11 可用。要做到恒为 dsh 的深灰（#1B1B1C），需要无边框窗口 + `initialization_script` 注入自绘标题栏——暂缓。
 
-## 9. 前端（src/）与窗口管理
+## 9. 前端与窗口管理
 
 壳的本地页面只有两个，用 **hash 路由**（`App.svelte` 监听 `hashchange`）：
 
@@ -159,7 +159,7 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
 
 IPC 命令（commands.rs，7 个）：`get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`。
 
-## 10. 平台抽象（platform/）
+## 10. 平台抽象
 
 ```rust
 pub trait Platform: Send + Sync {
@@ -203,7 +203,7 @@ scripts/fetch-runtime.ps1
 - 静默安装：`setup.exe /S`（加 `/D=<dir>` 指定目录）。升级前须先卸载旧版或结束运行实例。
 - 国内构建机直连 GitHub 不稳时，NSIS 下载可用 ghproxy 预置 `%LOCALAPPDATA%\tauri\NSIS`（细节见 AGENTS.md）。
 
-### CI / 发布
+### CI 与发布
 
 - `.github/workflows/build.yml`：tag `v*` 或手动触发 → windows-latest 上 fetch-runtime → `cargo test` → `tauri build` → 上传 artifact。
 - `.github/workflows/release.yml`：tag `v*` 触发，构建后直接把 setup.exe + SHA256 发布到 GitHub Release。
