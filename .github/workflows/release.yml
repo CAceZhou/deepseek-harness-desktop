@@ -48,7 +48,9 @@ jobs:
         run: |
           $exe = Get-Item src-tauri/target/release/bundle/nsis/*_x64-setup.exe
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  $($exe.Name)" | Out-File -Encoding ascii "$($exe.Name).sha256"
+          # 写到安装包同目录：Out-File 默认落工作区根，release files glob 会匹配不到
+          $out = Join-Path $exe.DirectoryName "$($exe.Name).sha256"
+          "$hash  $($exe.Name)" | Out-File -Encoding ascii $out
           Write-Host "SHA256: $hash"
 
       - name: Publish GitHub Release
