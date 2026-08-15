@@ -1,6 +1,6 @@
 # DSHDesktop
 
-**English → [README.md](README.md)**
+**[English](README.md)**
 
 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh，DeepSeek agent harness CLI）的 Windows 桌面壳应用。安装包内嵌 Node.js 便携运行时与 `@deepseek-ai/dsh`，把 dsh 官方 Web UI 变成双击即用的桌面应用——**不需要装 Node、不需要开终端、零配置**。
 
@@ -26,14 +26,14 @@
 - 安装后约 242MB（安装包约 45MB）
 - 用户数据在 `%LOCALAPPDATA%\DSHDesktop\`（dsh 设置、会话、日志）
 - 静默安装：`DSHDesktop_<版本>_x64-setup.exe /S`（可加 `/D=目录` 指定安装位置）
-- 升级：先退出应用（托盘 → 退出）或卸载旧版，再运行新安装包
+- 升级：先退出应用（托盘菜单选退出）或卸载旧版，再运行新安装包
 
 > DSHDesktop 是非官方的社区壳应用。dsh 本体由 DeepSeek 在 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 开发。
 
 ## 工作原理
 
 ```
-主窗口（启动画面 → 官方 dsh Web UI，http://127.0.0.1:<port>）
+主窗口（启动画面，随后打开官方 dsh Web UI，http://127.0.0.1:<port>）
       │ Tauri IPC
 Rust 核心：运行时 / 进程监督 / 托盘 / 通知 / 主题跟随 / 诊断
       │ spawn（无控制台窗口，DSH_HOME 隔离到应用数据目录）
@@ -70,7 +70,7 @@ powershell -File scripts/fetch-runtime.ps1
 pnpm tauri build               # 产物在 src-tauri/target/release/bundle/nsis/
 ```
 
-真实安装上的端到端验收（卸载 → 安装 → 启动 → 全项校验 → 截图）：
+真实安装上的端到端验收（卸载、安装、启动、全项校验、截图）：
 
 ```powershell
 powershell -File scripts/acceptance.ps1 -SetupExe src-tauri/target/release/bundle/nsis/DSHDesktop_0.1.0_x64-setup.exe
