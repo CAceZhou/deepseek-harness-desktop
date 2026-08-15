@@ -1,0 +1,60 @@
+name: release
+
+# 推送 v* 标签时构建安装包并发布到 GitHub Releases。
+# 用法：git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # 创建 release 所需
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch bundled runtime (node + dsh)
+        shell: pwsh
+        run: ./scripts/fetch-runtime.ps1
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build installer
+        run: pnpm tauri build
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $exe = Get-Item src-tauri/target/release/bundle/nsis/*_x64-setup.exe
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($exe.Name)" | Out-File -Encoding ascii "$($exe.Name).sha256"
+          Write-Host "SHA256: $hash"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/bundle/nsis/*_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/*_x64-setup.exe.sha256
+          generate_release_notes: true

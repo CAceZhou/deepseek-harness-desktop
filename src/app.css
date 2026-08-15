@@ -1,0 +1,10 @@
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #0f1115;
+  color: #e6e8ee;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}

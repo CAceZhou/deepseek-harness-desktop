@@ -1,0 +1,48 @@
+[package]
+name = "dshdesktop"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop shell for deepseek-harness (dsh)"
+repository = "https://github.com/LBurny/deepseek-harness-desktop"
+
+[lib]
+name = "dshdesktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+dirs = "6"
+thiserror = "2"
+fs_extra = "1"
+regex = "1"
+futures = "0.3"
+url = "2"
+tokio-tungstenite = "0.26"
+serde_yaml = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Diagnostics_ToolHelp",
+] }

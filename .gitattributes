@@ -1,0 +1,12 @@
+# 默认按文本处理，行尾交给 git 自动转换；脚本统一 LF（PowerShell 5.1 可正常执行 LF 脚本）
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.node binary
+
+# 确保 shell 脚本可执行位被保留（Windows 检出不受影响）
+*.sh text eol=lf
