@@ -34,6 +34,6 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "resources": ["runtime"]
+    "resources": ["runtime", "resources/sounds"]
   }
 }

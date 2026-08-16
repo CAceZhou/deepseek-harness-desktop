@@ -116,6 +116,7 @@ pub fn run() {
             tray::setup_tray(&handle)?;
             handle.manage(diagnostics::BootstrapInfo::default());
             let platform: Arc<dyn platform::Platform> = platform::current().into();
+            handle.manage(platform.clone());
             handle.manage(zoom::ZoomState::new(platform.runtime_base_dir()));
             handle.manage(settings::SettingsState::new(platform.runtime_base_dir()));
             // 技能管理的根目录 = 壳注入给 dsh 的 DSH_HOME（与 runtime.rs 的 home 同源）
@@ -138,6 +139,7 @@ pub fn run() {
             // 事件调试日志路径（与 diagnostics 用的同一份：runtime_base_dir/events.log）
             let notify_log = platform.runtime_base_dir().join("events.log");
             let sink_handle = handle.clone();
+            let sink_platform = platform.clone();
             let sink: NotifySink = Arc::new(move |n: Notification| {
                 // 只在主窗口隐藏（托盘态）时弹原生通知，避免打扰正在操作的用户
                 let visible = sink_handle
@@ -163,7 +165,21 @@ pub fn run() {
                         if !settings.notify_on_completion {
                             return;
                         }
-                        if let Some(name) = settings.completion_sound.toast_sound_name() {
+                        if let Some(rel) = settings.completion_sound.custom_wav() {
+                            // 柔和自定义音：静音 toast + 播放内置 wav；
+                            // 文件缺失（如 dev 未拷贝资源）降级为系统默认预设
+                            match resolve_custom_sound(&sink_handle, rel) {
+                                Some(p) => {
+                                    if let Err(e) = sink_platform.play_sound_file(&p) {
+                                        append_debug_line(
+                                            &notify_log,
+                                            &format!("play sound failed: {e}"),
+                                        );
+                                    }
+                                }
+                                None => builder = builder.sound("Default"),
+                            }
+                        } else if let Some(name) = settings.completion_sound.toast_sound_name() {
                             builder = builder.sound(name);
                         }
                     }
@@ -326,6 +342,20 @@ pub(crate) fn append_debug_line(path: &std::path::Path, line: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// 解析内置音效资源（如 sounds/chime.wav）的实际路径：resource_dir（剥 \\?\）
+/// 或可执行文件旁；都不存在返回 None（调用侧降级）。
+pub(crate) fn resolve_custom_sound(handle: &tauri::AppHandle, rel: &str) -> Option<PathBuf> {
+    let from_resource = handle
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|d| runtime::strip_verbatim(&d).join(rel));
+    let from_exe = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.join(rel)));
+    [from_resource, from_exe].into_iter().flatten().find(|p| p.is_file())
 }
 
 fn append_debug_log(path: &PathBuf, event: &ProcessEvent) {

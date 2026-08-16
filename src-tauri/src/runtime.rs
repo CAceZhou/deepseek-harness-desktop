@@ -76,7 +76,7 @@ fn paths_for(
 
 /// 剥离 Windows 扩展路径前缀 \\?\（仅当剩余部分是常规盘符绝对路径，如 C:\…）；
 /// \\?\UNC\ 等形态原样保留。与 dunce::simplified 的保守策略一致。
-fn strip_verbatim(p: &Path) -> PathBuf {
+pub(crate) fn strip_verbatim(p: &Path) -> PathBuf {
     let s = p.as_os_str().to_string_lossy();
     if let Some(rest) = s.strip_prefix(r"\\?\") {
         let b = rest.as_bytes();
@@ -174,6 +174,9 @@ mod tests {
         fn kill_process_tree(&self, _pid: u32) {}
         fn system_dark_mode(&self) -> bool {
             false
+        }
+        fn play_sound_file(&self, _path: &Path) -> Result<(), String> {
+            Ok(())
         }
     }
 

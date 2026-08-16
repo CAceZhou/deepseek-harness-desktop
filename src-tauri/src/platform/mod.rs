@@ -16,6 +16,8 @@ pub trait Platform: Send + Sync {
     fn configure_child_command(&self, _cmd: &mut tokio::process::Command) {}
     /// 系统是否处于深色模式（dsh 主题为 system 时用来解析）
     fn system_dark_mode(&self) -> bool;
+    /// 异步播放一个 wav 文件（柔和完成提示音）；文件不存在/播放失败返回 Err
+    fn play_sound_file(&self, path: &Path) -> Result<(), String>;
 }
 
 #[cfg(windows)]
@@ -48,5 +50,11 @@ mod tests {
         assert!(p.runtime_base_dir().ends_with("DSHDesktop"));
         let r = p.resource_runtime_dir(Path::new("C:\\res"));
         assert_eq!(r, PathBuf::from("C:\\res").join("runtime").join("windows-x64"));
+    }
+
+    #[test]
+    fn play_sound_file_missing_errors() {
+        let p = current();
+        assert!(p.play_sound_file(Path::new("C:\\nonexistent\\nope.wav")).is_err());
     }
 }

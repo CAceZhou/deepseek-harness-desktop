@@ -3,7 +3,7 @@
   import { onMount } from 'svelte'
 
   type Shortcut = { ctrl: boolean; shift: boolean; alt: boolean; code: string; key: string }
-  type CompletionSound = 'silent' | 'default' | 'im' | 'mail' | 'reminder' | 'sms'
+  type CompletionSound = 'silent' | 'default' | 'im' | 'mail' | 'reminder' | 'sms' | 'chime' | 'drop' | 'mellow'
   type ShellSettings = {
     zoom_step: number
     zoom_in: Shortcut
@@ -30,6 +30,9 @@
     { value: 'mail', label: '邮件' },
     { value: 'reminder', label: '提醒' },
     { value: 'sms', label: '短信' },
+    { value: 'chime', label: '轻铃' },
+    { value: 'drop', label: '水滴' },
+    { value: 'mellow', label: '和弦' },
   ]
 
   let zoomIn = $state<Shortcut>({ ...DEFAULTS.zoom_in })

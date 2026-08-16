@@ -38,9 +38,11 @@ pub enum CloseBehavior {
     Quit,
 }
 
-/// 任务完成通知的提示音。直接透传 toast 的音频预设
+/// 任务完成通知的提示音。前 5 项直接透传 toast 的音频预设
 /// （tauri-winrt-notification Sound::from_str → ms-winsoundevent:Notification.*，
 /// Windows 系统内置，不依赖用户声音方案）；Silent = 不传 sound，toast 静音。
+/// Chime/Drop/Mellow 是壳内置的柔和合成音（resources/sounds/*.wav）：
+/// toast 静音，由壳用 PlaySoundW 异步播放（见 platform::Platform::play_sound_file）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletionSound {
@@ -51,10 +53,14 @@ pub enum CompletionSound {
     Mail,
     Reminder,
     Sms,
+    Chime,
+    Drop,
+    Mellow,
 }
 
 impl CompletionSound {
     /// tauri-plugin-notification builder.sound() 的取值；None 表示静音 toast
+    /// （自定义柔和音也是静音 toast，声音由壳单独播放）
     pub fn toast_sound_name(self) -> Option<&'static str> {
         match self {
             CompletionSound::Silent => None,
@@ -63,6 +69,17 @@ impl CompletionSound {
             CompletionSound::Mail => Some("Mail"),
             CompletionSound::Reminder => Some("Reminder"),
             CompletionSound::Sms => Some("SMS"),
+            CompletionSound::Chime | CompletionSound::Drop | CompletionSound::Mellow => None,
+        }
+    }
+
+    /// 自定义柔和音的内置 wav 资源相对路径（相对 resource_dir）；None = 非自定义音
+    pub fn custom_wav(self) -> Option<&'static str> {
+        match self {
+            CompletionSound::Chime => Some("sounds/chime.wav"),
+            CompletionSound::Drop => Some("sounds/drop.wav"),
+            CompletionSound::Mellow => Some("sounds/mellow.wav"),
+            _ => None,
         }
     }
 }
@@ -193,11 +210,12 @@ pub fn set_shell_settings(
     Ok(())
 }
 
-/// 试听任务完成提示音：弹一条带所选音效的 toast（音效是 toast 的属性，
-/// 只能连同通知一起试听）；Silent 时弹静音 toast。
+/// 试听任务完成提示音：内置预设走 toast 音频属性；自定义柔和音（Chime/Drop/
+/// Mellow）弹静音 toast 并由壳播放内置 wav（文件缺失降级系统默认预设）。
 #[tauri::command]
 pub fn preview_completion_sound(
     app: tauri::AppHandle,
+    platform: tauri::State<std::sync::Arc<dyn crate::platform::Platform>>,
     sound: CompletionSound,
 ) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
@@ -206,7 +224,12 @@ pub fn preview_completion_sound(
         .builder()
         .title("DSHDesktop")
         .body("任务完成提示音试听");
-    if let Some(name) = sound.toast_sound_name() {
+    if let Some(rel) = sound.custom_wav() {
+        match crate::resolve_custom_sound(&app, rel) {
+            Some(p) => platform.play_sound_file(&p)?,
+            None => builder = builder.sound("Default"),
+        }
+    } else if let Some(name) = sound.toast_sound_name() {
         builder = builder.sound(name);
     }
     builder.show().map_err(|e| e.to_string())
@@ -351,6 +374,33 @@ mod tests {
         assert_eq!(CompletionSound::Mail.toast_sound_name(), Some("Mail"));
         assert_eq!(CompletionSound::Reminder.toast_sound_name(), Some("Reminder"));
         assert_eq!(CompletionSound::Sms.toast_sound_name(), Some("SMS"));
+    }
+
+    #[test]
+    fn custom_soft_sounds_use_wav_not_toast_presets() {
+        // 柔和系自定义音：toast 静音（None），由壳播放内置 wav
+        for (s, wav) in [
+            (CompletionSound::Chime, "sounds/chime.wav"),
+            (CompletionSound::Drop, "sounds/drop.wav"),
+            (CompletionSound::Mellow, "sounds/mellow.wav"),
+        ] {
+            assert_eq!(s.toast_sound_name(), None);
+            assert_eq!(s.custom_wav(), Some(wav));
+        }
+        // 内置 toast 预设不对应自定义 wav
+        assert_eq!(CompletionSound::Default.custom_wav(), None);
+        assert_eq!(CompletionSound::Silent.custom_wav(), None);
+    }
+
+    #[test]
+    fn custom_soft_sounds_serde_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = ShellSettings::default();
+        s.completion_sound = CompletionSound::Chime;
+        s.save(dir.path());
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(text.contains(r#""completion_sound": "chime""#), "实际文件：{text}");
+        assert_eq!(ShellSettings::load(dir.path()).completion_sound, CompletionSound::Chime);
     }
 
     #[test]

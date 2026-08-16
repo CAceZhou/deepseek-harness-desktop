@@ -42,4 +42,29 @@ impl Platform for WindowsPlatform {
             .map(|v| v == 0)
             .unwrap_or(false)
     }
+
+    fn play_sound_file(&self, path: &Path) -> Result<(), String> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Media::Audio::PlaySoundW;
+        const SND_ASYNC: u32 = 0x0001;
+        const SND_FILENAME: u32 = 0x0002_0000;
+        const SND_NOSTOP: u32 = 0x0010; // 不打断正在播放的上一声音效（连播排队交给系统混音）
+        if !path.is_file() {
+            return Err(format!("音效文件不存在: {}", path.display()));
+        }
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: wide 以 NUL 结尾且本调用期间存活；hmod 传 NULL（文件模式不需要模块句柄）
+        let ok = unsafe {
+            PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), SND_FILENAME | SND_ASYNC | SND_NOSTOP)
+        };
+        if ok == 0 {
+            Err("PlaySoundW 播放失败".into())
+        } else {
+            Ok(())
+        }
+    }
 }

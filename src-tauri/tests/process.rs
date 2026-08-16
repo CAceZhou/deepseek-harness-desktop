@@ -29,6 +29,9 @@ impl Platform for TestPlatform {
     fn system_dark_mode(&self) -> bool {
         false
     }
+    fn play_sound_file(&self, _path: &Path) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn system_node() -> PathBuf {
