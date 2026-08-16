@@ -246,11 +246,39 @@ scripts/fetch-runtime.ps1
 
 - **Win10 深色标题栏聚焦纯黑**：系统行为，见 §8。路线：无边框 + 自绘标题栏（需处理 Win10 贴边分屏），暂缓。
 - **通知覆盖面窄**：只有 approval/question 两类事件；dsh 上游接口稳定后再扩。
-- **dsh 版本固定**：随应用版本钉死（fetch-runtime 的 `-DshVersion`），dsh 升级 = 发新版应用。将来可考虑应用内自选 dsh 通道。
+- **dsh 版本固定**：随应用版本钉死（fetch-runtime 的 `-DshVersion`），dsh 升级 = 发新版应用（跟版流程见 §14）。将来可考虑应用内自选 dsh 通道。
 - **UI 缩放只作用于主窗口**：诊断/设置窗口不注入钩子、不应用缩放值；快捷键与步进均可在"其它设置"中自定义。
 - **仅 Windows x64**：平台抽象已就绪，见 §10 的扩展清单。
 
-## 14. 附录：dsh 上游事实清单（0.1.0-rc.6）
+## 14. 更新策略（跟随 dsh 上游）
+
+上游源仓库：[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（npm 包 `@deepseek-ai/dsh`）。壳不 fork、不打补丁、不改 dsh 源码（§1 非目标），只做跟版发版。dsh 的内部优化（启动速度、UI 迭代等）对壳透明，重打包即受益。
+
+**版本钉死**：dsh 随应用版本钉死在安装包里（`fetch-runtime.ps1` 的 `-DshVersion`），用户机器上的 dsh 不会自动更新——**dsh 升级 = 我们发一版新应用**。
+
+**跟版流程（常规升级为纯流程，零代码改动）**：
+
+1. 关注上游 release 与 npm 版本流，对照 §15 事实清单评估是否触及接口契约。
+2. 改 `scripts/fetch-runtime.ps1` 的 `-DshVersion` 默认值，重新抓运行时（含冒烟与 prune 精简）；若上游新增依赖（尤其 native 模块、多平台 prebuilds），按需调整 `prune-runtime.ps1` 规则。
+3. `cd src-tauri && cargo test` 全绿 → `pnpm tauri build` → `scripts/acceptance.ps1` 全项验收。
+4. 三处版本号同步（§11）后打 tag `v*`，CI 自动构建并发布 GitHub Release。
+
+**接口契约核对表（上游变了才动代码）**：
+
+| 上游事实（当前值见 §15） | 变了要动哪里 |
+| --- | --- |
+| 入口 `lib/bin.js` 路径 | `runtime.rs` 的 `paths_for` / `validate_source` |
+| `web --port <N>` 命令形式 | `process.rs` 的 spawn 参数 |
+| 事件通道 `/api/events.mux` 及帧格式 | `notify/` 适配层（`NotifySource` trait 即为此隔离；方法过滤在 `EventFilter`） |
+| `settings.yaml` 的 `ui-theme.preference` | `theme.rs`（解析 + 首启播种） |
+| Node 版本要求 | `fetch-runtime.ps1` 的 `-NodeVersion` |
+| WS 信任栅栏（loopback / 无 Origin） | `notify/ws.rs` 握手 |
+
+契约变化大多会在 `cargo test`（WS 通知集成、主题解析等单测）或 acceptance 全链路中暴露；现场问题先看 `events.log`。
+
+**回滚**：新版 dsh 出严重问题、壳又要先发补丁时，`-DshVersion` 回退到上一可用版本重打包即可——用户数据全在 `dsh-home`，与 dsh 版本解耦。
+
+## 15. 附录：dsh 上游事实清单（0.1.0-rc.6）
 
 | 事实 | 值 |
 | --- | --- |

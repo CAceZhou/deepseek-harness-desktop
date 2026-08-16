@@ -256,11 +256,39 @@ After touching process/notification/theme logic: run `cargo test` and one full a
 
 - **Windows 10 dark title bar is pure black when focused**: system behavior, see §8. Path forward: frameless window + custom title bar (needs extra work for Win10 edge-snapping); deferred.
 - **Narrow notification coverage**: only approval/question events; expand once dsh's upstream API stabilizes.
-- **Pinned dsh version**: locked per app release (`-DshVersion` in fetch-runtime), so upgrading dsh means releasing a new app version. An in-app dsh channel selector is a possible future feature.
+- **Pinned dsh version**: locked per app release (`-DshVersion` in fetch-runtime), so upgrading dsh means releasing a new app version (tracking flow in §14). An in-app dsh channel selector is a possible future feature.
 - **UI zoom applies to the main window only**: the diagnostics/settings windows get neither the hook nor the zoom factor; shortcuts and step size are customizable under "Settings".
 - **Windows x64 only**: the platform abstraction is ready; see the checklist in §10.
 
-## 14. Appendix: upstream dsh facts (0.1.0-rc.6)
+## 14. Update strategy (tracking upstream dsh)
+
+Upstream source: [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (npm package `@deepseek-ai/dsh`). The shell does not fork, patch, or modify dsh sources (§1 non-goals) — it only tracks releases. dsh's internal improvements (startup speed, UI iterations) are transparent to the shell: rebundling inherits them for free.
+
+**Pinned version**: dsh is locked per app release (`-DshVersion` in `fetch-runtime.ps1`) and bundled into the installer; the dsh on users' machines never self-updates — **upgrading dsh means shipping a new app release**.
+
+**Tracking flow (a routine upgrade is process-only, no code changes)**:
+
+1. Watch upstream releases and the npm version stream; check the changelog against the §15 facts table for contract changes.
+2. Bump the `-DshVersion` default in `scripts/fetch-runtime.ps1` and re-fetch the runtime (smoke test + pruning included). If upstream adds dependencies (native modules, multi-platform prebuilds), adjust `prune-runtime.ps1` rules as needed.
+3. `cd src-tauri && cargo test` all green → `pnpm tauri build` → full pass of `scripts/acceptance.ps1`.
+4. Sync the version number in all three places (§11), tag `v*`; CI builds and publishes the GitHub Release.
+
+**Interface contract checklist (code changes only when upstream moves these)**:
+
+| Upstream fact (current values in §15) | Where to change |
+| --- | --- |
+| Entry point `lib/bin.js` path | `paths_for` / `validate_source` in `runtime.rs` |
+| `web --port <N>` command shape | spawn args in `process.rs` |
+| Event channel `/api/events.mux` and frame format | the `notify/` adapter (the `NotifySource` trait exists for exactly this; method filtering lives in `EventFilter`) |
+| `ui-theme.preference` in `settings.yaml` | `theme.rs` (parsing + first-launch seeding) |
+| Node version requirement | `-NodeVersion` in `fetch-runtime.ps1` |
+| WS trust fence (loopback / no Origin) | handshake in `notify/ws.rs` |
+
+Contract breaks mostly surface in `cargo test` (WS notification integration, theme parsing unit tests) or the end-to-end acceptance run; in the field, check `events.log` first.
+
+**Rollback**: if a new dsh turns out broken while the shell needs to ship a fix, revert `-DshVersion` to the last known-good version and rebundle — user data lives entirely in `dsh-home`, decoupled from the dsh version.
+
+## 15. Appendix: upstream dsh facts (0.1.0-rc.6)
 
 | Fact | Value |
 | --- | --- |
