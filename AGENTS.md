@@ -12,7 +12,8 @@
 
 ```
 src-tauri/src/
-  lib.rs            Builder 组装：插件(single_instance 必须最先) → setup → 事件桥(dsh-ready→导航)
+  lib.rs            Builder 组装：插件(single_instance 必须最先；window-state 记忆窗口几何，
+                    flags 不含 VISIBLE 防托盘隐藏态被记住) → setup → 事件桥(dsh-ready→导航)
   platform/         平台抽象 trait（多平台预留）；windows.rs 实现；macos/linux 待实现
   process.rs        DshProcess 监督循环：spawn node bin.js web --port N、指数退避、stop/restart
   runtime.rs        ensure_runtime：安装目录可写则原地运行内嵌运行时；只读则回退部署副本
@@ -33,6 +34,7 @@ scripts/            fetch-runtime.ps1(下载 Node+dsh+精简)、prune-runtime.ps
                     acceptance.ps1(端到端验收)、shot-window.ps1(窗口截图)、
                     hide-show-theme.ps1(托盘隐藏回归)、get-attr20.ps1(读 DWM 深色属性)、
                     simulate-first-launch.ps1(模拟首启并截图)、verify-zoom.ps1(UI 缩放目验，需先 pnpm dev)、
+                    verify-window-state.ps1(窗口几何记忆回归：调尺寸→退出→重启→断言恢复)、
                     use-fixture-runtime.ps1、gen-icon.mjs
 docs/design.zh-CN.md / design.md                  设计文档（架构/模块/打包/测试/已知限制，先读它）
 ```

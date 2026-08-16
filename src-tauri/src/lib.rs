@@ -33,6 +33,17 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_notification::init())
+        // 窗口几何记忆：缩放/移动实时入缓存，退出时落盘，下次启动建窗时恢复。
+        // 不含 VISIBLE——托盘隐藏态下退出会把"隐藏"记住，下次启动主窗口不出来
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,

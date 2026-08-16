@@ -76,7 +76,7 @@ DSHDesktop\
 
 ## 4. Startup sequence
 
-1. **Plugin init**: `single_instance` must be registered first, so that a second launch focuses the existing main window instead of spawning again.
+1. **Plugin init**: `single_instance` must be registered first, so that a second launch focuses the existing main window instead of spawning again. `window-state` remembers window geometry: resize/move events update an in-memory cache, the state is written to `%APPDATA%/<identifier>/.window-state.json` on `RunEvent::Exit`, and restored when each window is created on the next launch. Flags are limited to `SIZE | POSITION | MAXIMIZED` — `VISIBLE` is excluded, otherwise quitting while hidden to tray would persist "hidden" and the main window would not show on the next launch.
 2. **setup**: build the tray → register `BootstrapInfo` (bootstrap-error fallback) → locate the bundled runtime via `resource_dir`.
 3. **First-launch detection**: if `dsh-home` doesn't exist before ensure_runtime, this is the first launch (the splash uses this to choose between the progress bar and plain text).
 4. **ensure_runtime** (§5): on failure the app does **not** exit. Instead, the error is stored in `BootstrapInfo` and emitted as `dsh-progress` (stage=error), leaving the window on the splash page showing the error. (The frontend actively queries `get_bootstrap_error` because the error event may be emitted before the frontend's listener registers.)
