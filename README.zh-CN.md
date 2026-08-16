@@ -89,4 +89,4 @@ powershell -File scripts/acceptance.ps1 -SetupExe src-tauri/target/release/bundl
 
 ## License
 
-[MIT](LICENSE)。上游 dsh 同为 MIT（Copyright 2026 DeepSeek）。
+[MIT](LICENSE)

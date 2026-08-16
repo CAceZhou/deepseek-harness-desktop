@@ -89,4 +89,4 @@ Windows x64 only for now. All platform differences are isolated behind `src-taur
 
 ## License
 
-[MIT](LICENSE). Upstream dsh is also MIT (Copyright 2026 DeepSeek).
+[MIT](LICENSE)
