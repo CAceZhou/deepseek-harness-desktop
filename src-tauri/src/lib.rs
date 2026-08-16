@@ -15,6 +15,7 @@ pub mod progress;
 pub mod runtime;
 pub mod theme;
 pub mod tray;
+pub mod zoom;
 
 use notify::{Notification, NotifySink, NotifySource};
 use process::{DshState, ProcessEvent};
@@ -43,12 +44,28 @@ pub fn run() {
             commands::set_autostart,
             commands::get_bootstrap_error,
             commands::is_first_launch,
+            zoom::zoom_ui,
         ])
+        .on_page_load(|webview, payload| {
+            if !matches!(
+                payload.event(),
+                tauri::webview::PageLoadEvent::Finished
+            ) {
+                return;
+            }
+            // 每次整页加载后重注入缩放快捷键钩子（SPA 内导航不重载页面，不会重复触发）
+            let _ = webview.eval(zoom::HOOK_JS);
+            // 启动首帧补应用持久化缩放；也兜住 WebView2 重建后 zoom 丢失
+            if let Some(state) = webview.app_handle().try_state::<zoom::ZoomState>() {
+                let _ = webview.set_zoom(state.get());
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
             tray::setup_tray(&handle)?;
             handle.manage(diagnostics::BootstrapInfo::default());
             let platform: Arc<dyn platform::Platform> = platform::current().into();
+            handle.manage(zoom::ZoomState::new(platform.runtime_base_dir()));
             let version = app.package_info().version.to_string();
             let home_url = app
                 .get_webview_window("main")

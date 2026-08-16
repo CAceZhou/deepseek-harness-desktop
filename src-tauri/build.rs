@@ -1,3 +1,21 @@
 fn main() {
-    tauri_build::build()
+    // 声明 app 命令清单：为每个命令生成 allow-*/deny-* 权限。
+    // 注意副作用：一旦存在 app ACL manifest，**所有** app 命令（含本地页面）都转为
+    // ACL 管控，必须在 capabilities 里逐个 allow，否则本地页面调用也会被拒。
+    // 这样做是为了让 capabilities/dsh-remote.json 能只给远程 dsh 源开放 zoom_ui 一个命令。
+    tauri_build::try_build(
+        tauri_build::Attributes::new().app_manifest(
+            tauri_build::AppManifest::new().commands(&[
+                "get_status",
+                "restart_dsh",
+                "get_recent_logs",
+                "get_autostart",
+                "set_autostart",
+                "get_bootstrap_error",
+                "is_first_launch",
+                "zoom_ui",
+            ]),
+        ),
+    )
+    .unwrap();
 }
