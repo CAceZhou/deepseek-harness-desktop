@@ -1,9 +1,8 @@
+use crate::settings::{SettingsState, ShellSettings};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
-/// UI 缩放步进（加性）：Ctrl+Shift+= / Ctrl+Shift+- 每次 ±2 个百分点
-pub const ZOOM_STEP: f64 = 0.02;
 /// WebView2 ZoomFactor 有效区间内的安全边界
 pub const ZOOM_MIN: f64 = 0.25;
 pub const ZOOM_MAX: f64 = 5.0;
@@ -76,40 +75,68 @@ pub fn apply_to_main(app: &AppHandle, v: f64) {
 }
 
 #[tauri::command]
-pub fn zoom_ui(app: AppHandle, state: State<ZoomState>, delta: f64) -> Result<(), String> {
+pub fn zoom_ui(
+    app: AppHandle,
+    state: State<ZoomState>,
+    settings: State<SettingsState>,
+    direction: &str,
+) -> Result<(), String> {
+    let step = settings.get().zoom_step;
+    let delta = match direction {
+        "in" => step,
+        "out" => -step,
+        other => return Err(format!("未知缩放方向: {other}")),
+    };
     let v = state.adjust(delta);
     apply_to_main(&app, v);
     Ok(())
 }
 
-/// 注入每个页面（本地 splash 与远程 dsh UI 通用）的快捷键钩子。
-/// 主匹配 e.code 物理键位；e.key 兜底覆盖合成按键/RDP 等 code 为空的场景
-/// （Ctrl+Shift+= 在美式布局下 key 为 '+'，Ctrl+Shift+- 为 '_'）。
+/// 生成注入每个页面（本地 splash 与远程 dsh UI 通用）的快捷键钩子脚本。
+/// 快捷键定义随当前设置内嵌为 JSON；匹配逻辑与 Shortcut::matches 对齐——
+/// code 为主（真实键盘），key 兜底（合成按键/RDP 注入时 code 为空），meta 永不命中。
+/// 步进不写死在脚本里：zoom_ui 命令在调用时读取设置，改步进无需重注入。
+/// 改快捷键需重注入：监听器可热替换（__dshZoomHookHandler 存旧 handler，
+/// 重复注入时先 removeEventListener 再挂新的，不会叠加）。
 /// capture 阶段拦截并阻止冒泡，避免页面自身处理器重复响应。
-/// 注意：脚本内步进字面量 0.02 须与 ZOOM_STEP 保持一致。
-pub const HOOK_JS: &str = r#"(() => {
-  if (window.__dshZoomHook) return;
-  window.__dshZoomHook = true;
-  window.addEventListener('keydown', (e) => {
-    if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
-    const zoomIn = e.code === 'Equal' || e.key === '+' || e.key === '=';
-    const zoomOut = e.code === 'Minus' || e.key === '-' || e.key === '_';
-    const delta = zoomIn ? 0.02 : zoomOut ? -0.02 : 0;
-    if (!delta) return;
+pub fn hook_js(settings: &ShellSettings) -> String {
+    let cfg = serde_json::json!({
+        "in": settings.zoom_in,
+        "out": settings.zoom_out,
+    });
+    HOOK_TEMPLATE.replace("__ZOOM_CFG__", &cfg.to_string())
+}
+
+const HOOK_TEMPLATE: &str = r#"(() => {
+  const cfg = __ZOOM_CFG__;
+  const match = (sc, e) => {
+    if (e.metaKey) return false;
+    if (!!e.ctrlKey !== sc.ctrl || !!e.shiftKey !== sc.shift || !!e.altKey !== sc.alt) return false;
+    return (e.code && e.code === sc.code) || (e.key && e.key === sc.key);
+  };
+  const handler = (e) => {
+    const direction = match(cfg.in, e) ? 'in' : match(cfg.out, e) ? 'out' : null;
+    if (!direction) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     const t = window.__TAURI__;
     const invoke = t && t.core && t.core.invoke
       ? t.core.invoke.bind(t.core)
       : window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
-    if (invoke) invoke('zoom_ui', { delta });
-  }, true);
+    if (invoke) invoke('zoom_ui', { direction });
+  };
+  if (window.__dshZoomHookHandler) {
+    window.removeEventListener('keydown', window.__dshZoomHookHandler, true);
+  }
+  window.__dshZoomHookHandler = handler;
+  window.addEventListener('keydown', handler, true);
 })();
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::Shortcut;
 
     #[test]
     fn clamp_bounds_and_nan() {
@@ -123,9 +150,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = ZoomState::new(dir.path().to_path_buf());
         assert_eq!(s.get(), 1.0);
-        let v = s.adjust(ZOOM_STEP);
+        let v = s.adjust(0.02);
         assert!((v - 1.02).abs() < 1e-9);
-        assert!((s.adjust(ZOOM_STEP) - 1.04).abs() < 1e-9);
+        assert!((s.adjust(0.02) - 1.04).abs() < 1e-9);
         assert_eq!(s.adjust(-10.0), ZOOM_MIN); // 大步越界被 clamp
         assert_eq!(s.get(), ZOOM_MIN);
     }
@@ -153,12 +180,24 @@ mod tests {
     }
 
     #[test]
-    fn hook_js_markers() {
-        assert!(HOOK_JS.contains("__dshZoomHook")); // 幂等标志
-        assert!(HOOK_JS.contains("Equal") && HOOK_JS.contains("Minus"));
-        assert!(HOOK_JS.contains("zoom_ui"));
-        assert!(HOOK_JS.contains("ctrlKey") && HOOK_JS.contains("shiftKey"));
-        // e.key 兜底：合成按键/RDP 场景 e.code 为空，Shift+= 得 '+'、Shift+- 得 '_'
-        assert!(HOOK_JS.contains("e.key") && HOOK_JS.contains("'+'") && HOOK_JS.contains("'_'"));
+    fn hook_js_embeds_default_shortcuts() {
+        let js = hook_js(&ShellSettings::default());
+        assert!(js.contains("Equal") && js.contains("+"));
+        assert!(js.contains("Minus") && js.contains("_"));
+        assert!(js.contains("zoom_ui"));
+        // 热替换：重复注入时先摘旧监听器再挂新的（设置保存后立即生效）
+        assert!(js.contains("removeEventListener") && js.contains("__dshZoomHookHandler"));
+        // 方向负载：步进不写死在脚本里，由命令在调用时从设置读取
+        assert!(js.contains("'in'") && js.contains("'out'"));
+        assert!(js.contains("direction"));
+    }
+
+    #[test]
+    fn hook_js_embeds_custom_shortcuts() {
+        let mut s = ShellSettings::default();
+        s.zoom_in = Shortcut { ctrl: true, shift: false, alt: true, code: "KeyQ".into(), key: "q".into() };
+        let js = hook_js(&s);
+        assert!(js.contains("KeyQ") && js.contains(r#""ctrl":true"#));
+        assert!(!js.contains("Equal"));
     }
 }

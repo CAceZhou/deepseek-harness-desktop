@@ -43,7 +43,8 @@ dsh 本身提供 `dsh web` 命令：在本机 127.0.0.1 上启动一个 Web UI �
 │  theme.rs    轮询 dsh 主题设置 → DWM 标题栏着色                            │
 │  progress.rs 首启进度模型：阶段权重、百分比映射、结构化事件负载             │
 │  tray.rs     托盘菜单；diagnostics.rs 状态/日志；commands.rs 7 个命令      │
-│  zoom.rs     UI 缩放：±2% 步进、快捷键钩子注入、ui-zoom.txt 持久化         │
+│  zoom.rs     UI 缩放：可配置步进（默认 2%）、快捷键钩子注入、持久化        │
+│  settings.rs 壳设置：settings.json 模型/校验/持久化 + get/set 命令         │
 │  platform/   Platform trait（windows.rs 实现；macos/linux 为编译期占位）   │
 └──────────────────────────────────┬───────────────────────────────────────┘
                                    │ spawn（CREATE_NO_WINDOW，DSH_HOME 隔离）
@@ -61,6 +62,7 @@ DSHDesktop\
   dsh-home\          dsh 的 DSH_HOME（settings.yaml、sessions、用户数据都在这里）
   events.log         进程事件调试日志（1MB 截断，诊断的最后手段）
   ui-zoom.txt        UI 缩放比例持久化（缺失/损坏回退 100%）
+  settings.json      壳设置（缩放步进/快捷键/关窗行为；缺失/损坏回退默认）
   runtime\           仅"只读安装目录"回退模式下存在（部署副本，带 .version 标记）
 ```
 
@@ -70,7 +72,7 @@ DSHDesktop\
 2. **setup**：建托盘 → 注册 `BootstrapInfo`（启动错误兜底）→ 取 `resource_dir` 定位内嵌运行时。
 3. **首启判定**：`dsh-home` 在 ensure_runtime 之前不存在即首启（前端据此决定显示进度条还是纯文字）。
 4. **ensure_runtime**（§5）：失败不退出，错误写入 `BootstrapInfo` 并 emit `dsh-progress`（stage=error），窗口停在启动画面显示错误（前端会主动 `get_bootstrap_error` 查询，因为错误事件可能早于前端 listen 注册而丢失）。
-5. **spawn_theme_follower**：立即按系统主题给标题栏着色一次，然后 2s 轮询。
+5. **seed_theme_preference → spawn_theme_follower**：首启时 settings.yaml 不存在则按系统深浅色预写 `ui-theme.preference`（dsh 缺省渲染浅色，不播种会出现"深标题栏 + 浅 UI"）；然后立即按系统主题给标题栏着色一次，进入 2s 轮询。
 6. **spawn_supervised**：经 `tauri::async_runtime::block_on` 调用（setup 里没有 tokio 上下文，内部 `tokio::spawn` 依赖它）。状态机：`Starting → Ready{port}`。
 7. **事件桥 bridge_event**（lib.rs）：所有 `dsh-progress` 事件都是结构化负载 `{stage, message, percent}`（progress.rs），百分比由后端按阶段权重计算：
    - `runtime`：原地运行 → 0→15%；回退部署 → 按复制字节实时报 0→70%（节流：百分比变化才发）
@@ -139,6 +141,8 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
 目标：dsh 设置里的 `ui-theme.preference`（light/dark/system，存于 `$DSH_HOME/settings.yaml`）变化时，应用所有窗口的标题栏跟着变。
 
 - **2s 轮询**配置文件（文件极小，轮询比 inotify 简单且跨平台无差异）；`system` 经注册表 `AppsUseLightTheme` 解析。
+- **首启播种（seed_theme_preference）**：dsh 在 settings.yaml 缺失/无 preference 时**缺省渲染浅色 UI**，而壳标题栏缺省跟随系统——系统为深色时首启出现"深标题栏 + 浅内容"。ensure_runtime 之后、spawn_supervised 之前，若 settings.yaml 不存在则按系统深浅色预写 `ui-theme.preference`（dark/light，无 BOM），dsh 首启即与壳一致。已存在的文件绝不动。
+- **splash 浅色适配**：splash 页面随 `prefers-color-scheme` 切换深浅配色，浅色系统下与浅色标题栏一致。
 - **BOM 陷阱（已修复，勿回退）**：PowerShell 5.1 的 `Set-Content -Encoding utf8` 会写入 UTF-8 BOM，而 yaml-rust 不接受 BOM——解析失败会**静默回退 system 主题**，表象是"标题栏永远白色"。`read_theme_preference` 先剥 BOM 再解析。教训：**不要用 PowerShell 改写 settings.yaml**。
 - **Windows 双管齐下**：
   1. `window.set_theme()` 同步 tao 内部主题状态——不同步的话，tao 可能在窗口事件后用缓存的旧状态覆盖可视效果。隐藏窗口上调用可能报错甚至 panic，必须 `catch_unwind` 兜住；
@@ -147,26 +151,32 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
 
 ## 9. 前端与窗口管理
 
-壳的本地页面只有两个，用 **hash 路由**（`App.svelte` 监听 `hashchange`）：
+壳的本地页面只有三个，用 **hash 路由**（`App.svelte` 监听 `hashchange`）：
 
 - `#/`（默认）**Splash.svelte**：启动画面。onMount 先 `invoke('get_bootstrap_error')` 主动查引导错误、`invoke('is_first_launch')` 查首启标记，再 listen 结构化的 `dsh-progress`。**首启时**显示分阶段进度条（百分比数字 + 阶段清单 ✓/●/○）与"首次启动需要部署运行时，可能要花几分钟"提示（仅此分支渲染，后续启动不出现）：runtime/starting 阶段百分比由后端给下限，`starting` 期间前端向 95% 渐近缓动（dsh 无细分进度信号，缓动只是呈现层，永不触顶），`ready` 到 100%。**非首启**维持纯文字 + 不确定滚动条。dsh 就绪后由 **Rust 侧**把主窗口 navigate 到 dsh UI——前端不自己跳。
 - `#/diagnostics` **Diagnostics.svelte**：诊断面板（状态/端口/PID/版本、500 行实时日志回填 + `dsh-log` 事件流、重启按钮、开机自启开关）。
+- `#/settings` **Settings.svelte**：其它设置（缩放步进 1%–25%、放大/缩小快捷键录制器、关窗行为单选）。保存时前端先校验（至少一个修饰键、in/out 不冲突），再 `invoke('set_shell_settings', { next })` 由 Rust 端复验并落盘。
 
 窗口行为：
 
-- 主窗口 `main`：**关窗 = 隐藏到托盘**（`CloseRequested` 时 `prevent_close` + `hide`）；托盘"打开主界面"或二次启动（单实例插件）时 `show` + `unminimize` + `set_focus`。
-- 诊断窗口 `diagnostics`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
+- 主窗口 `main`：**关窗行为可配置**（settings.json 的 `close_behavior`）：默认 `background` = 隐藏到托盘（`CloseRequested` 时 `prevent_close` + `hide`），`quit` = 走托盘"退出"同一流程直接退出程序；托盘"打开主界面"或二次启动（单实例插件）时 `show` + `unminimize` + `set_focus`。
+- 诊断窗口 `diagnostics`、设置窗口 `settings`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
 - 托盘"退出"：先 `stop()` dsh，等 1.5s 让监督循环杀完进程树，再 `exit(0)`。
 - 导航到远程 URL 后窗口标题被 dsh 的 `document.title` 覆盖——**外部脚本不要按标题找窗口**（按 PID + 类名，见 `scripts/shot-window.ps1`）。
 
-IPC 命令：commands.rs 7 个——`get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`（见下）。
+IPC 命令：commands.rs 7 个——`get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui` 与 settings.rs 的 `get_shell_settings` / `set_shell_settings`（见下）。
+
+壳设置（settings.rs）：
+
+- **模型**：`settings.json` 存 `zoom_step`（0.01–0.25，越界 clamp）、`zoom_in`/`zoom_out` 快捷键（`{ctrl, shift, alt, code, key}`）、`close_behavior`（`background`/`quit`）。缺失/损坏 → 全默认；部分字段缺失 → 逐字段回退默认（serde default）；校验失败（无修饰键/in-out 冲突）→ 全默认，不带坏状态跑。
+- **SettingsState**：托管内存值 + 持久化目录；`set` 先 clamp/校验再落盘再替换内存，校验失败则内存磁盘都保持旧值。
+- **保存即生效**：`set_shell_settings` 成功后对主窗口重注入缩放钩子（快捷键定义内嵌在脚本里必须重注入）；步进不写死在脚本里，`zoom_ui` 调用时从设置读，改步进本来就无需重注入。
 
 UI 缩放（zoom.rs）：
 
-- **快捷键**：`Ctrl+Shift+=` 放大、`Ctrl+Shift+-` 缩小，加性步进 ±2 个百分点（clamp 到 25%–500%）。钩子脚本（`HOOK_JS`）由 `on_page_load` 在每次整页加载完成后 eval 注入（`__dshZoomHook` 标志保证幂等，本地 splash 与远程 dsh UI 通用），capture 阶段拦截并 invoke `zoom_ui` 命令，经 WebView2 原生 `SetZoomFactor` 生效——与浏览器 Ctrl++ 同一机制。匹配主用 `e.code` 物理键位，`e.key` 兜底（`'+'`/`'='`/`'-'`/`'_'`）——合成按键与 RDP 注入的 keydown `e.code` 为空，纯 code 匹配会整组失效。
+- **快捷键**：默认 `Ctrl+Shift+=` 放大、`Ctrl+Shift+-` 缩小（可在设置窗口自定义），步进默认 ±2 个百分点（可配 1%–25%，clamp 到 25%–500%）。钩子脚本由 `hook_js(&ShellSettings)` 生成——快捷键定义内嵌为 JSON，匹配逻辑与 `Shortcut::matches` 对齐：`e.code` 物理键位为主，`e.key` 兜底（合成按键与 RDP 注入的 keydown `e.code` 为空，纯 code 匹配会整组失效），meta 永不命中。`on_page_load` 在每次整页加载完成后 eval 注入（**只注入 main 窗口**——设置窗口录制快捷键时不能被钩子抢先拦截；本地 splash 与远程 dsh UI 通用），capture 阶段拦截并 invoke `zoom_ui`（负载 `direction: "in"/"out"`），经 WebView2 原生 `SetZoomFactor` 生效——与浏览器 Ctrl++ 同一机制。监听器可热替换（`__dshZoomHookHandler` 存旧 handler，重注入先 `removeEventListener` 再挂新的，不叠加）。
 - **持久化**：每次变更即写 `%LOCALAPPDATA%\DSHDesktop\ui-zoom.txt`；缺失/损坏回退 100%；每次页面加载时 `on_page_load` 统一重应用当前缩放（兼作 WebView2 重建后的兜底）。
-- **托盘菜单**：放大界面 / 缩小界面 / 重置缩放三项，点击先呼出主窗口再应用。
-- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 8 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
+- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 10 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
 
 ## 10. 平台抽象
 
@@ -222,7 +232,7 @@ scripts/fetch-runtime.ps1
 
 | 层 | 内容 | 命令 |
 | --- | --- | --- |
-| Rust 单元测试（30） | runtime 部署/回退/路径归一化/复制进度回调、progress 阶段权重与百分比映射、theme BOM 解析、notify 过滤与摘要、LogRing 淘汰、port 分配与就绪探测、platform 基础、zoom 步进/clamp/持久化 | `cd src-tauri && cargo test` |
+| Rust 单元测试（39） | runtime 部署/回退/路径归一化/复制进度回调、progress 阶段权重与百分比映射、theme BOM 解析与首启播种、notify 过滤与摘要、LogRing 淘汰、port 分配与就绪探测、platform 基础、zoom clamp/持久化/钩子脚本内嵌设置、settings 模型/校验/持久化 | `cd src-tauri && cargo test` |
 | 进程集成测试（2，tests/process.rs） | 用 `tests/fixtures/fake-dsh.cjs`（可脚本化崩溃的假 dsh）验证 就绪→HTTP 200→stop、崩溃→自动重启→二次 Ready | 同上 |
 | 通知集成测试（1，tests/notify_ws.rs） | 本地 WS 服务器发事件帧，验证过滤与端口跟随 | 同上 |
 | 控制台窗口回归（2，tests/console_window.rs） | 正组：CREATE_NO_WINDOW 的子进程**无可见** ConsoleWindowClass 窗口；对照组：CREATE_NEW_CONSOLE 的子进程**有**（证明检测有效，屏幕上会短暂弹真实控制台窗口，属正常） | 同上 |
@@ -237,7 +247,7 @@ scripts/fetch-runtime.ps1
 - **Win10 深色标题栏聚焦纯黑**：系统行为，见 §8。路线：无边框 + 自绘标题栏（需处理 Win10 贴边分屏），暂缓。
 - **通知覆盖面窄**：只有 approval/question 两类事件；dsh 上游接口稳定后再扩。
 - **dsh 版本固定**：随应用版本钉死（fetch-runtime 的 `-DshVersion`），dsh 升级 = 发新版应用。将来可考虑应用内自选 dsh 通道。
-- **UI 缩放为全局一份**：主窗口与诊断窗口共享同一缩放比例；快捷键固定 `Ctrl+Shift+=`/`-`，暂不可自定义。
+- **UI 缩放只作用于主窗口**：诊断/设置窗口不注入钩子、不应用缩放值；快捷键与步进均可在"其它设置"中自定义。
 - **仅 Windows x64**：平台抽象已就绪，见 §10 的扩展清单。
 
 ## 14. 附录：dsh 上游事实清单（0.1.0-rc.6）

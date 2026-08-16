@@ -107,6 +107,38 @@
     justify-content: center;
     height: 100%;
     gap: 12px;
+    background: #0f1115;
+  }
+  /* 浅色系统：标题栏跟随系统为浅色，splash 内容同步浅色避免割裂。
+     （首启播种已让 dsh UI 跟随系统，这里补齐 splash 这一阶段） */
+  @media (prefers-color-scheme: light) {
+    main {
+      background: #f5f6f8;
+    }
+    h1 {
+      color: #1a1d24;
+    }
+    p {
+      color: #5c6472;
+    }
+    .hint {
+      color: #8a919e;
+    }
+    .pct {
+      color: #1a1d24;
+    }
+    .track {
+      background: #dde1e8;
+    }
+    .steps {
+      color: #8a919e;
+    }
+    .steps li.active {
+      color: #1a1d24;
+    }
+    .steps li.done {
+      color: #4c8a4c;
+    }
   }
   h1 {
     font-size: 22px;

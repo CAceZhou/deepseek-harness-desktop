@@ -13,6 +13,7 @@ pub mod port;
 pub mod process;
 pub mod progress;
 pub mod runtime;
+pub mod settings;
 pub mod theme;
 pub mod tray;
 pub mod zoom;
@@ -45,6 +46,8 @@ pub fn run() {
             commands::get_bootstrap_error,
             commands::is_first_launch,
             zoom::zoom_ui,
+            settings::get_shell_settings,
+            settings::set_shell_settings,
         ])
         .on_page_load(|webview, payload| {
             if !matches!(
@@ -53,11 +56,21 @@ pub fn run() {
             ) {
                 return;
             }
-            // 每次整页加载后重注入缩放快捷键钩子（SPA 内导航不重载页面，不会重复触发）
-            let _ = webview.eval(zoom::HOOK_JS);
-            // 启动首帧补应用持久化缩放；也兜住 WebView2 重建后 zoom 丢失
-            if let Some(state) = webview.app_handle().try_state::<zoom::ZoomState>() {
-                let _ = webview.set_zoom(state.get());
+            // 缩放钩子只注入主窗口（splash 与远程 dsh UI 两个阶段的同一窗口）；
+            // 诊断/设置窗口不注入——否则设置窗口里录制 Ctrl+Shift+= 会先被钩子拦截
+            if webview.label() == "main" {
+                // 每次整页加载后重注入（SPA 内导航不重载页面，不会重复触发）。
+                // 钩子内嵌当前快捷键设置；manage 之前的首帧用默认设置兜底
+                let settings = webview
+                    .app_handle()
+                    .try_state::<settings::SettingsState>()
+                    .map(|s| s.get())
+                    .unwrap_or_default();
+                let _ = webview.eval(zoom::hook_js(&settings));
+                // 启动首帧补应用持久化缩放；也兜住 WebView2 重建后 zoom 丢失
+                if let Some(state) = webview.app_handle().try_state::<zoom::ZoomState>() {
+                    let _ = webview.set_zoom(state.get());
+                }
             }
         })
         .setup(|app| {
@@ -66,6 +79,7 @@ pub fn run() {
             handle.manage(diagnostics::BootstrapInfo::default());
             let platform: Arc<dyn platform::Platform> = platform::current().into();
             handle.manage(zoom::ZoomState::new(platform.runtime_base_dir()));
+            handle.manage(settings::SettingsState::new(platform.runtime_base_dir()));
             let version = app.package_info().version.to_string();
             let home_url = app
                 .get_webview_window("main")
@@ -151,6 +165,10 @@ pub fn run() {
             let deployed = deployed.load(Ordering::SeqCst);
 
             let log_ring = diagnostics::LogRing::default();
+            // 首启播种主题：settings.yaml 不存在时按系统深浅色预写 ui-theme.preference，
+            // 否则 dsh 缺省渲染浅色而壳标题栏跟随系统（深色时不一致）。
+            // 必须在 spawn_supervised 之前，dsh 首次启动即读到。
+            theme::seed_theme_preference(&paths.home, platform.system_dark_mode());
             theme::spawn_theme_follower(&handle, platform.clone(), paths.home.clone());
             let emit_handle = handle.clone();
             let nav_home = home_url.clone();
@@ -183,11 +201,21 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 主窗口关窗 = 最小化到托盘；诊断窗口关窗 = 销毁
+            // 主窗口关窗行为由设置决定：默认最小化到托盘（保持后台运行），
+            // 也可配置为直接退出程序；诊断/设置窗口关窗 = 销毁
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let quit = window
+                        .app_handle()
+                        .try_state::<settings::SettingsState>()
+                        .map(|s| matches!(s.get().close_behavior, settings::CloseBehavior::Quit))
+                        .unwrap_or(false);
+                    if quit {
+                        tray::quit_app(window.app_handle());
+                    } else {
+                        let _ = window.hide();
+                    }
                 }
             }
         })

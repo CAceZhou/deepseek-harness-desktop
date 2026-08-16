@@ -48,7 +48,8 @@ dsh itself ships a `dsh web` command that serves a Web UI on 127.0.0.1. But usin
 │  progress.rs first-launch progress model: stage weights, percent mapping,  │
 │              structured event payload                                      │
 │  tray.rs     tray menu; diagnostics.rs state/logs; commands.rs 7 commands  │
-│  zoom.rs     UI zoom: ±2% step, shortcut hook injection, ui-zoom.txt       │
+│  zoom.rs     UI zoom: configurable step (2% default), hook injection,      │
+│              persistence; settings.rs shell settings model + get/set cmds  │
 │              persistence                                                   │
 │  platform/   Platform trait (windows.rs implemented; macos/linux are       │
 │              compile-time placeholders)                                    │
@@ -68,6 +69,7 @@ DSHDesktop\
   dsh-home\          dsh's DSH_HOME (settings.yaml, sessions, user data)
   events.log         process-event debug log (truncated at 1MB; last-resort diagnostics)
   ui-zoom.txt        UI zoom factor persistence (missing/corrupt falls back to 100%)
+  settings.json      shell settings (zoom step/shortcuts/close behavior; defaults on missing/corrupt)
   runtime\           exists only in read-only-install fallback mode
                      (deployed copy, marked with a .version file)
 ```
@@ -78,7 +80,7 @@ DSHDesktop\
 2. **setup**: build the tray → register `BootstrapInfo` (bootstrap-error fallback) → locate the bundled runtime via `resource_dir`.
 3. **First-launch detection**: if `dsh-home` doesn't exist before ensure_runtime, this is the first launch (the splash uses this to choose between the progress bar and plain text).
 4. **ensure_runtime** (§5): on failure the app does **not** exit. Instead, the error is stored in `BootstrapInfo` and emitted as `dsh-progress` (stage=error), leaving the window on the splash page showing the error. (The frontend actively queries `get_bootstrap_error` because the error event may be emitted before the frontend's listener registers.)
-5. **spawn_theme_follower**: colors the title bar once from the system theme immediately, then polls every 2s.
+5. **seed_theme_preference → spawn_theme_follower**: on first launch, if settings.yaml doesn't exist, pre-write `ui-theme.preference` from the system dark/light mode (dsh renders light by default, so without seeding a dark system would get "dark title bar + light UI"); then color the title bar once from the system theme and poll every 2s.
 6. **spawn_supervised**: invoked via `tauri::async_runtime::block_on` (there is no tokio context inside `setup`, and the supervision loop's `tokio::spawn` needs one). State machine: `Starting → Ready{port}`.
 7. **Event bridge** (`bridge_event` in lib.rs): every `dsh-progress` event carries a structured payload `{stage, message, percent}` (progress.rs), with percents computed backend-side from stage weights:
    - `runtime`: in-place → 0→15%; fallback deploy → real byte progress 0→70% (throttled: only emitted when the percent changes)
@@ -149,6 +151,8 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
 Goal: when dsh's `ui-theme.preference` (light/dark/system, stored in `$DSH_HOME/settings.yaml`) changes, every app window's title bar follows.
 
 - **2s polling** of the settings file (tiny file, rare changes; polling is simpler than inotify and identical cross-platform); `system` resolves via the registry value `AppsUseLightTheme`.
+- **First-launch seeding (seed_theme_preference)**: when settings.yaml is missing or has no preference, dsh **renders its UI light by default**, while the shell's title bar defaults to the system theme — on a dark system the first launch showed a "dark title bar + light content" mismatch. Between ensure_runtime and spawn_supervised, if settings.yaml doesn't exist, pre-write `ui-theme.preference` (dark/light, no BOM) from the system mode so dsh's first render matches the shell. An existing file is never touched.
+- **Splash light-mode adaptation**: the splash page switches between dark and light palettes via `prefers-color-scheme`, staying consistent with the light title bar on light systems.
 - **BOM trap (fixed; do not regress)**: PowerShell 5.1's `Set-Content -Encoding utf8` writes a UTF-8 BOM, and yaml-rust rejects BOMs, so the parse failure **silently falls back to the system theme**, which presented as "the title bar is stuck white". `read_theme_preference` strips the BOM before parsing. Lesson: **never rewrite settings.yaml with PowerShell**.
 - **Windows two-pronged application**:
   1. `window.set_theme()` syncs tao's internal theme state. Otherwise tao may overwrite the visual effect with its cached stale state on the next window event. Calls on hidden windows can error or even panic, so they're wrapped in `catch_unwind`;
@@ -157,26 +161,32 @@ Goal: when dsh's `ui-theme.preference` (light/dark/system, stored in `$DSH_HOME/
 
 ## 9. Frontend and window management
 
-The shell has exactly two local pages, routed by **hash** (`App.svelte` listens to `hashchange`):
+The shell has exactly three local pages, routed by **hash** (`App.svelte` listens to `hashchange`):
 
 - `#/` (default) **Splash.svelte**: the startup page. On mount it first `invoke('get_bootstrap_error')` for any bootstrap error and `invoke('is_first_launch')` for the first-launch flag, then listens to the structured `dsh-progress`. **On first launch** it shows a stage-based progress bar (percent number + a ✓/●/○ step checklist) plus a "first launch deploys the runtime and may take a few minutes" hint (rendered only in this branch, never on later launches): the backend supplies percent floors for the runtime/starting stages; during `starting` the frontend eases asymptotically toward 95% (dsh exposes no finer progress; the easing is presentation-only and never tops out), and `ready` pins it to 100%. **On subsequent launches** it keeps plain text plus an indeterminate bar. Once dsh is ready, **the Rust side** navigates the main window to the dsh UI. The frontend never navigates itself.
 - `#/diagnostics` **Diagnostics.svelte**: the diagnostics panel (state/port/PID/version, a 500-line live log backfilled from the ring plus the `dsh-log` event stream, a restart button, an autostart toggle).
+- `#/settings` **Settings.svelte**: shell settings (zoom step 1%–25%, zoom in/out shortcut recorders, close-behavior radio). On save the frontend validates first (at least one modifier key, no in/out conflict), then calls `invoke('set_shell_settings', { next })` for Rust-side revalidation and persistence.
 
 Window behavior:
 
-- Main window `main`: **close = hide to tray** (`CloseRequested` → `prevent_close` + `hide`); shown again via the tray menu or a second launch (single-instance plugin) with `show` + `unminimize` + `set_focus`.
-- Diagnostics window `diagnostics`: created on demand from the tray menu, **close = destroy**, recreated next time.
+- Main window `main`: **close behavior is configurable** (`close_behavior` in settings.json): the default `background` hides to tray (`CloseRequested` → `prevent_close` + `hide`); `quit` runs the same exit path as tray "Quit". Shown again via the tray menu or a second launch (single-instance plugin) with `show` + `unminimize` + `set_focus`.
+- Diagnostics window `diagnostics` and settings window `settings`: created on demand from the tray menu, **close = destroy**, recreated next time.
 - Tray "Quit": `stop()` dsh first, wait 1.5s for the supervision loop to kill the process tree, then `exit(0)`.
 - After navigating to the remote URL, the window title is overwritten by dsh's `document.title`, so **external scripts must not locate the window by title** (match by PID + class name, see `scripts/shot-window.ps1`).
 
-IPC commands: commands.rs carries 7 — `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch` — plus `zoom_ui` in zoom.rs (see below).
+IPC commands: commands.rs carries 7 — `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch` — plus `zoom_ui` in zoom.rs and `get_shell_settings` / `set_shell_settings` in settings.rs (see below).
+
+Shell settings (settings.rs):
+
+- **Model**: `settings.json` stores `zoom_step` (0.01–0.25, clamped), the `zoom_in`/`zoom_out` shortcuts (`{ctrl, shift, alt, code, key}`), and `close_behavior` (`background`/`quit`). Missing/corrupt file → all defaults; partially missing fields → per-field defaults (serde default); failed validation (modifier-less shortcut, in/out conflict) → all defaults rather than running with a broken state.
+- **SettingsState**: managed state holding the in-memory value plus the persistence directory; `set` clamps/validates first, then writes, then swaps memory — on validation failure both memory and disk keep the old value.
+- **Effective on save**: after `set_shell_settings` succeeds, the main window's zoom hook is re-injected (the shortcut definitions are embedded in the script, so a re-inject is required). The step is not baked into the script — `zoom_ui` reads it from settings at call time — so step changes need no re-injection.
 
 UI zoom (zoom.rs):
 
-- **Shortcuts**: `Ctrl+Shift+=` zooms in, `Ctrl+Shift+-` zooms out, an additive step of ±2 percentage points (clamped to 25%–500%). The hook script (`HOOK_JS`) is eval-injected by `on_page_load` after every full page load (idempotent via the `__dshZoomHook` flag; covers both the local splash and the remote dsh UI), intercepts at capture phase, and invokes the `zoom_ui` command, which applies the factor through WebView2's native `SetZoomFactor` — the same mechanism as browser Ctrl++. Matching primarily uses the physical `e.code`, with an `e.key` fallback (`'+'`/`'='`/`'-'`/`'_'`) — synthesized keystrokes and RDP-injected keydowns arrive with an empty `e.code`, so a code-only match silently breaks there.
+- **Shortcuts**: `Ctrl+Shift+=` zooms in and `Ctrl+Shift+-` zooms out by default (customizable in the settings window); the additive step defaults to ±2 percentage points (configurable 1%–25%, factor clamped to 25%–500%). The hook script is generated by `hook_js(&ShellSettings)` — the shortcut definitions are embedded as JSON, and matching mirrors `Shortcut::matches`: physical `e.code` first, `e.key` as fallback (synthesized keystrokes and RDP-injected keydowns arrive with an empty `e.code`, so a code-only match silently breaks there), meta never matches. `on_page_load` eval-injects it after every full page load (**main window only** — otherwise the settings window's shortcut recorder would be pre-empted by the hook; covers both the local splash and the remote dsh UI), intercepts at capture phase, and invokes `zoom_ui` (payload `direction: "in"/"out"`), which applies the factor through WebView2's native `SetZoomFactor` — the same mechanism as browser Ctrl++. The listener is hot-replaceable (`__dshZoomHookHandler` holds the previous handler; re-injection `removeEventListener`s it before adding the new one, so handlers never stack).
 - **Persistence**: every change is written to `%LOCALAPPDATA%\DSHDesktop\ui-zoom.txt`; a missing/corrupt file falls back to 100%; `on_page_load` re-applies the current zoom on every page load (also covers WebView2 recreations).
-- **Tray menu**: Zoom In / Zoom Out / Reset Zoom items; clicking one shows the main window first, then applies.
-- **Remote IPC**: the dsh UI is a remote origin, and Tauri routes all remote-origin IPC through the ACL (without an app manifest, remote calls are rejected outright). So build.rs declares all 8 commands via `AppManifest::commands` (generating `permissions/autogenerated/allow-*.toml`), and `capabilities/dsh-remote.json` grants only `allow-zoom-ui` to `http://127.0.0.1:*`. **Side effect**: app commands from local pages also become ACL-gated; default.json allows them one by one — **adding a command means touching three places**: the build.rs commands list, capabilities/default.json (local), and dsh-remote.json (remote, if needed).
+- **Remote IPC**: the dsh UI is a remote origin, and Tauri routes all remote-origin IPC through the ACL (without an app manifest, remote calls are rejected outright). So build.rs declares all 10 commands via `AppManifest::commands` (generating `permissions/autogenerated/allow-*.toml`), and `capabilities/dsh-remote.json` grants only `allow-zoom-ui` to `http://127.0.0.1:*`. **Side effect**: app commands from local pages also become ACL-gated; default.json allows them one by one — **adding a command means touching three places**: the build.rs commands list, capabilities/default.json (local), and dsh-remote.json (remote, if needed).
 
 ## 10. Platform abstraction
 
@@ -232,7 +242,7 @@ Result: staging 344 to 227.9 MB; installer **45.2 MB**; installed **241.8 MB** (
 
 | Layer | Coverage | Command |
 | --- | --- | --- |
-| Rust unit tests (30) | runtime deploy/fallback/path normalization/copy-progress callback, progress stage weights & percent mapping, theme BOM parsing, notify filter & summary, LogRing eviction, port allocation & readiness, platform basics, zoom step/clamp/persistence | `cd src-tauri && cargo test` |
+| Rust unit tests (39) | runtime deploy/fallback/path normalization/copy-progress callback, progress stage weights & percent mapping, theme BOM parsing & first-launch seeding, notify filter & summary, LogRing eviction, port allocation & readiness, platform basics, zoom clamp/persistence/hook embeds settings, settings model/validation/persistence | `cd src-tauri && cargo test` |
 | Process integration (2, tests/process.rs) | with `tests/fixtures/fake-dsh.cjs` (a scriptable-crash fake dsh): ready→HTTP 200→stop, and crash→auto-restart→second Ready | same |
 | Notification integration (1, tests/notify_ws.rs) | a local WS server sends event frames; verifies filtering and port following | same |
 | Console-window regression (2, tests/console_window.rs) | positive: a CREATE_NO_WINDOW child has **no visible** ConsoleWindowClass window; control: a CREATE_NEW_CONSOLE child **has one** (proves the detector works; a real console window briefly flashes on screen, which is expected) | same |
@@ -247,7 +257,7 @@ After touching process/notification/theme logic: run `cargo test` and one full a
 - **Windows 10 dark title bar is pure black when focused**: system behavior, see §8. Path forward: frameless window + custom title bar (needs extra work for Win10 edge-snapping); deferred.
 - **Narrow notification coverage**: only approval/question events; expand once dsh's upstream API stabilizes.
 - **Pinned dsh version**: locked per app release (`-DshVersion` in fetch-runtime), so upgrading dsh means releasing a new app version. An in-app dsh channel selector is a possible future feature.
-- **UI zoom is a single global value**: the main window and the diagnostics window share one zoom factor; the shortcuts are fixed to `Ctrl+Shift+=`/`-` and not customizable yet.
+- **UI zoom applies to the main window only**: the diagnostics/settings windows get neither the hook nor the zoom factor; shortcuts and step size are customizable under "Settings".
 - **Windows x64 only**: the platform abstraction is ready; see the checklist in §10.
 
 ## 14. Appendix: upstream dsh facts (0.1.0-rc.6)

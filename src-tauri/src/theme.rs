@@ -29,6 +29,20 @@ fn system_theme(platform: &dyn Platform) -> Theme {
     }
 }
 
+/// 首启播种：settings.yaml 不存在时按系统深浅色预写 ui-theme.preference。
+/// dsh 缺省（无 preference）渲染浅色 UI，而壳标题栏缺省跟随系统；系统为深色时
+/// 首启会出现"深标题栏 + 浅内容"的不一致。播种后 dsh 首启即与壳一致。
+/// 注意：yaml-rust 不接受 UTF-8 BOM，std::fs::write 不会写 BOM。
+pub fn seed_theme_preference(home: &Path, dark: bool) {
+    let path = home.join("settings.yaml");
+    if path.exists() {
+        return;
+    }
+    let pref = if dark { "dark" } else { "light" };
+    let _ = std::fs::create_dir_all(home)
+        .and_then(|_| std::fs::write(&path, format!("ui-theme:\n  preference: {pref}\n")));
+}
+
 fn resolve(platform: &dyn Platform, settings: &Path) -> Theme {
     match read_theme_preference(settings).as_deref() {
         Some("dark") => Theme::Dark,
@@ -42,7 +56,7 @@ fn apply(app: &AppHandle, theme: Theme) {
     apply_windows(app, theme);
     #[cfg(not(windows))]
     {
-        for label in ["main", "diagnostics"] {
+        for label in ["main", "diagnostics", "settings"] {
             if let Some(w) = app.get_webview_window(label) {
                 let _ = w.set_theme(Some(theme));
             }
@@ -61,7 +75,7 @@ fn apply_windows(app: &AppHandle, theme: Theme) {
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY: u32 = 19; // Win10 20H1 之前
     let value: i32 = matches!(theme, Theme::Dark) as i32;
-    for label in ["main", "diagnostics"] {
+    for label in ["main", "diagnostics", "settings"] {
         if let Some(w) = app.get_webview_window(label) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _ = w.set_theme(Some(theme));
@@ -136,5 +150,20 @@ mod tests {
         let f = dir.path().join("settings.yaml");
         std::fs::write(&f, "other:\n  x: 1\n").unwrap();
         assert_eq!(read_theme_preference(&f), None);
+    }
+
+    #[test]
+    fn seed_creates_only_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("dsh-home");
+        // 不存在 → 按系统深浅色播种
+        seed_theme_preference(&home, true);
+        let text = std::fs::read_to_string(home.join("settings.yaml")).unwrap();
+        assert!(text.starts_with("ui-theme:\n  preference: dark"));
+        assert!(!text.starts_with('\u{FEFF}')); // 无 BOM
+        // 已存在 → 不动（哪怕内容里没有 preference）
+        std::fs::write(home.join("settings.yaml"), "custom: 1\n").unwrap();
+        seed_theme_preference(&home, false);
+        assert_eq!(std::fs::read_to_string(home.join("settings.yaml")).unwrap(), "custom: 1\n");
     }
 }

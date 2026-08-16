@@ -14,6 +14,8 @@ fn main() {
                 "get_bootstrap_error",
                 "is_first_launch",
                 "zoom_ui",
+                "get_shell_settings",
+                "set_shell_settings",
             ]),
         ),
     )
