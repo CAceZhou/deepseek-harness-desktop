@@ -78,6 +78,7 @@
     <p class="error">{message}</p>
   {:else if firstLaunch}
     <p>{message}</p>
+    <p class="hint">首次启动需要部署运行时，可能要花几分钟，请耐心等待</p>
     <div class="pct">{Math.round(displayed)}%</div>
     <div class="track">
       <div class="determinate" style="width: {Math.min(displayed, 100)}%"></div>
@@ -123,6 +124,10 @@
     max-width: 70%;
     text-align: center;
     line-height: 1.5;
+  }
+  .hint {
+    font-size: 12px;
+    color: #5c6472;
   }
   .pct {
     font-size: 28px;
