@@ -56,8 +56,12 @@ fn read_patch(path: &Path) -> Result<Vec<Value>, String> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
-    serde_yaml::from_str(text)
-        .map_err(|e| format!("cordis.patch.yml 解析失败，请手工编辑该文件：{e}"))
+    serde_yaml::from_str(text).map_err(|e| {
+        crate::i18n::pick(
+            format!("cordis.patch.yml 解析失败，请手工编辑该文件：{e}"),
+            format!("Failed to parse cordis.patch.yml, please edit the file manually: {e}"),
+        )
+    })
 }
 
 fn write_patch(path: &Path, entries: &[Value]) -> Result<(), String> {
@@ -161,8 +165,12 @@ fn find_server(entries: &[Value], server_name: &str) -> Option<(usize, usize)> {
 fn set_server_enabled(home: &Path, server_name: &str, enabled: bool) -> Result<(), String> {
     let path = patch_path(home);
     let mut entries = read_patch(&path)?;
-    let pos = find_server(&entries, server_name)
-        .ok_or_else(|| format!("MCP server 不存在: {server_name}"))?;
+    let pos = find_server(&entries, server_name).ok_or_else(|| {
+        crate::i18n::pick(
+            format!("MCP server 不存在: {server_name}"),
+            format!("MCP server not found: {server_name}"),
+        )
+    })?;
     let e = entries[pos.0]["insert"]
         .as_sequence_mut()
         .and_then(|s| s.get_mut(pos.1))
@@ -179,8 +187,12 @@ fn set_server_enabled(home: &Path, server_name: &str, enabled: bool) -> Result<(
 fn delete_server(home: &Path, server_name: &str) -> Result<(), String> {
     let path = patch_path(home);
     let mut entries = read_patch(&path)?;
-    let (oi, ii) = find_server(&entries, server_name)
-        .ok_or_else(|| format!("MCP server 不存在: {server_name}"))?;
+    let (oi, ii) = find_server(&entries, server_name).ok_or_else(|| {
+        crate::i18n::pick(
+            format!("MCP server 不存在: {server_name}"),
+            format!("MCP server not found: {server_name}"),
+        )
+    })?;
     entries[oi]["insert"].as_sequence_mut().unwrap().remove(ii);
     if entries[oi]["insert"].as_sequence().is_some_and(|s| s.is_empty()) {
         entries.remove(oi); // 该 op 只插了这一个条目：连同 op 一起删
@@ -190,21 +202,32 @@ fn delete_server(home: &Path, server_name: &str) -> Result<(), String> {
 
 fn upsert_server(home: &Path, original: Option<&str>, cfg: &McpServerConfig) -> Result<(), String> {
     if !valid_server_name(&cfg.server_name) {
-        return Err(format!(
-            "serverName 须匹配 [A-Za-z0-9_-]{{1,32}}: {:?}",
-            cfg.server_name
+        return Err(crate::i18n::pick(
+            format!(
+                "serverName 须匹配 [A-Za-z0-9_-]{{1,32}}: {:?}",
+                cfg.server_name
+            ),
+            format!(
+                "serverName must match [A-Za-z0-9_-]{{1,32}}: {:?}",
+                cfg.server_name
+            ),
         ));
     }
     let stdio = match cfg.transport.as_str() {
         "stdio" => true,
         "streamable-http" => false,
-        t => return Err(format!("不支持的 transport: {t}（仅 stdio / streamable-http）")),
+        t => {
+            return Err(crate::i18n::pick(
+                format!("不支持的 transport: {t}（仅 stdio / streamable-http）"),
+                format!("Unsupported transport: {t} (only stdio / streamable-http)"),
+            ))
+        }
     };
     if stdio && cfg.command.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        return Err("stdio 需要 command".into());
+        return Err(crate::i18n::pick("stdio 需要 command", "stdio requires a command").into());
     }
     if !stdio && cfg.url.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        return Err("streamable-http 需要 url".into());
+        return Err(crate::i18n::pick("streamable-http 需要 url", "streamable-http requires a url").into());
     }
     let path = patch_path(home);
     let mut entries = read_patch(&path)?;
@@ -212,11 +235,17 @@ fn upsert_server(home: &Path, original: Option<&str>, cfg: &McpServerConfig) -> 
     // 唯一性：除被编辑条目自身外，不得占用该 serverName
     if let Some(p) = find_server(&entries, &cfg.server_name) {
         if Some(p) != edit_pos {
-            return Err(format!("serverName 已存在: {}", cfg.server_name));
+            return Err(crate::i18n::pick(
+                format!("serverName 已存在: {}", cfg.server_name),
+                format!("serverName already exists: {}", cfg.server_name),
+            ));
         }
     }
     if original.is_some() && edit_pos.is_none() {
-        return Err(format!("MCP server 不存在: {}", original.unwrap()));
+        return Err(crate::i18n::pick(
+            format!("MCP server 不存在: {}", original.unwrap()),
+            format!("MCP server not found: {}", original.unwrap()),
+        ));
     }
     // 编辑时以旧 config 为底保留高级键（toolCallTimeoutMs/reconnect 等）；新建用空 mapping
     let mut map = edit_pos
@@ -466,7 +495,10 @@ fn parse_claude(text: &str) -> Vec<(String, Result<McpServerConfig, String>)> {
                     c.headers = json_str_map(&v["headers"]);
                     Ok(c)
                 }
-                other => Err(format!("dsh 不支持该类型（{other}），仅 stdio / streamable-http")),
+                other => Err(crate::i18n::pick(
+                    format!("dsh 不支持该类型（{other}），仅 stdio / streamable-http"),
+                    format!("dsh does not support this type ({other}), only stdio / streamable-http"),
+                )),
             };
             (name.clone(), cfg)
         })
@@ -501,7 +533,7 @@ fn parse_codex(text: &str) -> Vec<(String, Result<McpServerConfig, String>)> {
                 })
                 .unwrap_or_default();
             let r = if c.command.is_none() {
-                Err("Codex 条目缺少 command".to_string())
+                Err(crate::i18n::pick("Codex 条目缺少 command", "Codex entry is missing command"))
             } else {
                 Ok(c)
             };
@@ -529,7 +561,10 @@ fn parse_opencode(text: &str) -> Vec<(String, Result<McpServerConfig, String>)> 
                     c.args = cmd[1..].to_vec();
                     c.env = json_str_map(&v["environment"]);
                     if c.command.is_none() {
-                        Err("OpenCode local 条目缺少 command".to_string())
+                        Err(crate::i18n::pick(
+                            "OpenCode local 条目缺少 command",
+                            "OpenCode local entry is missing command",
+                        ))
                     } else {
                         Ok(c)
                     }
@@ -540,9 +575,15 @@ fn parse_opencode(text: &str) -> Vec<(String, Result<McpServerConfig, String>)> 
                     c.headers = json_str_map(&v["headers"]);
                     Ok(c)
                 }
-                other => Err(format!(
-                    "dsh 不支持该类型（{}），仅 local / remote",
-                    other.unwrap_or("?")
+                other => Err(crate::i18n::pick(
+                    format!(
+                        "dsh 不支持该类型（{}），仅 local / remote",
+                        other.unwrap_or("?")
+                    ),
+                    format!(
+                        "dsh does not support this type ({}), only local / remote",
+                        other.unwrap_or("?")
+                    ),
                 )),
             };
             (name.clone(), cfg)
@@ -577,14 +618,20 @@ fn apply_imported(
                 error: Some(e),
             };
             let Some((_, cfg)) = parsed.iter().find(|(n, _)| *n == item.name) else {
-                return err("源配置中不存在该 server".into());
+                return err(crate::i18n::pick(
+                    "源配置中不存在该 server",
+                    "Server not found in the source config",
+                ));
             };
             let cfg = match cfg {
                 Ok(c) => c,
                 Err(e) => return err(e.clone()),
             };
             let Ok(entries) = read_patch(&patch_path(home)) else {
-                return err("cordis.patch.yml 解析失败，请手工编辑".into());
+                return err(crate::i18n::pick(
+                    "cordis.patch.yml 解析失败，请手工编辑",
+                    "Failed to parse cordis.patch.yml, please edit manually",
+                ));
             };
             let conflict = find_server(&entries, &name).is_some();
             if conflict && !item.overwrite {
@@ -673,7 +720,7 @@ pub fn import_mcp_servers(
             .map(|i| McpImportResult {
                 name: i.name.clone(),
                 status: "error".into(),
-                error: Some("未知导入源".into()),
+                error: Some(crate::i18n::pick("未知导入源", "Unknown import source")),
             })
             .collect();
     };

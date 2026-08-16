@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { onMount } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
+  import { t } from '../i18n'
 
   type McpServerConfig = {
     serverName: string
@@ -121,10 +122,10 @@
   }
 
   async function remove(row: McpServerRow) {
-    if (!confirm(`删除 MCP server「${row.serverName}」？dsh 会立即断开与它的连接。`)) return
+    if (!confirm(t('删除 MCP 确认', { name: row.serverName }))) return
     try {
       await invoke('delete_mcp_server', { serverName: row.serverName })
-      notice = { kind: 'ok', text: `已删除「${row.serverName}」` }
+      notice = { kind: 'ok', text: t('已删除', { name: row.serverName }) }
       await load()
     } catch (e) {
       notice = { kind: 'err', text: String(e) }
@@ -167,7 +168,10 @@
         originalName: editing?.serverName ?? null,
         config,
       })
-      notice = { kind: 'ok', text: editing ? `已保存「${config.serverName}」` : `已添加「${config.serverName}」` }
+      notice = {
+        kind: 'ok',
+        text: editing ? t('已保存', { name: config.serverName }) : t('已添加', { name: config.serverName }),
+      }
       showEditor = false
       await load()
     } catch (e) {
@@ -210,9 +214,9 @@
       const ok = results.filter((r) => r.status === 'imported').length
       const skipped = results.filter((r) => r.status === 'skipped').length
       const failed = results.filter((r) => r.status === 'error')
-      const parts = [`导入 ${ok} 项`]
-      if (skipped) parts.push(`跳过 ${skipped} 项`)
-      if (failed.length) parts.push(`失败 ${failed.length} 项：${failed[0].error ?? ''}`)
+      const parts = [t('导入完成', { count: ok })]
+      if (skipped) parts.push(t('跳过完成', { count: skipped }))
+      if (failed.length) parts.push(t('失败完成', { count: failed.length, err: failed[0].error ?? '' }))
       notice = { kind: failed.length ? 'err' : 'ok', text: parts.join('，') }
       showImport = false
       await load()
@@ -226,14 +230,14 @@
 
 <main>
   <header>
-    <h1>MCP 管理</h1>
+    <h1>{t('MCP 管理')}</h1>
     <span class="actions">
-      <button class="ghost" onclick={() => openEditor(null)} disabled={readOnly !== null}>新增 Server</button>
-      <button class="primary" onclick={openImport} disabled={readOnly !== null}>从其它工具导入</button>
+      <button class="ghost" onclick={() => openEditor(null)} disabled={readOnly !== null}>{t('新增 Server')}</button>
+      <button class="primary" onclick={openImport} disabled={readOnly !== null}>{t('从其它工具导入')}</button>
     </span>
   </header>
 
-  <p class="tip">配置写入 dsh 的 cordis.patch.yml，热重载即时生效，无需重启服务。</p>
+  <p class="tip">{t('配置写入 dsh 的 cordis.patch.yml，热重载即时生效，无需重启服务。')}</p>
 
   {#if readOnly}
     <p class="notice err">{readOnly}</p>
@@ -241,26 +245,26 @@
 
   <section class="card list">
     {#if loading}
-      <p class="empty">加载中…</p>
+      <p class="empty">{t('加载中…')}</p>
     {:else if rows.length === 0}
-      <p class="empty">尚无 MCP server，点击右上角「新增 Server」或「从其它工具导入」开始。</p>
+      <p class="empty">{t('尚无 MCP server，点击右上角「新增 Server」或「从其它工具导入」开始。')}</p>
     {:else}
       {#each rows as row (row.serverName)}
         <div class="row" class:disabled={!row.enabled}>
           <span class="badge">{row.transport === 'streamable-http' ? 'HTTP' : 'STDIO'}</span>
           <span class="meta">
             <b>{row.serverName}</b>
-            <span class="desc">{row.summary || '（无命令/地址）'}</span>
+            <span class="desc">{row.summary || t('（无命令/地址）')}</span>
           </span>
-          <span class="state">{row.enabled ? '已启用' : '已停用'}</span>
+          <span class="state">{row.enabled ? t('已启用') : t('已停用')}</span>
           <span class="switch">
             <input type="checkbox" checked={row.enabled} onchange={() => toggle(row)} />
             <span class="track"></span>
           </span>
-          <button class="edit" title="编辑" onclick={() => openEditor(row)}>
+          <button class="edit" title={t('编辑')} onclick={() => openEditor(row)}>
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
           </button>
-          <button class="trash" title="删除" onclick={() => remove(row)}>
+          <button class="trash" title={t('删除')} onclick={() => remove(row)}>
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
         </div>
@@ -282,49 +286,49 @@
       role="dialog"
       tabindex="-1"
     >
-      <h2>{editing ? `编辑 Server「${editing.serverName}」` : '新增 Server'}</h2>
+      <h2>{editing ? t('编辑 Server', { name: editing.serverName }) : t('新增 Server')}</h2>
       <div class="field">
-        <span>名称</span>
-        <input bind:value={form.serverName} placeholder="字母/数字/_/-，最长 32" />
+        <span>{t('名称')}</span>
+        <input bind:value={form.serverName} placeholder={t('字母/数字/_/-，最长 32')} />
       </div>
       <div class="field">
-        <span>类型</span>
+        <span>{t('类型')}</span>
         <select bind:value={form.transport}>
-          <option value="stdio">stdio（本地命令）</option>
-          <option value="streamable-http">streamable-http（远程 URL）</option>
+          <option value="stdio">{t('stdio（本地命令）')}</option>
+          <option value="streamable-http">{t('streamable-http（远程 URL）')}</option>
         </select>
       </div>
       {#if form.transport === 'stdio'}
         <div class="field">
-          <span>命令</span>
-          <input bind:value={form.command} placeholder="如 npx" />
+          <span>{t('命令')}</span>
+          <input bind:value={form.command} placeholder={t('如 npx')} />
         </div>
         <div class="field top">
-          <span>参数</span>
-          <textarea bind:value={form.argsText} rows="3" placeholder={'每行一个参数，如：\n-y\n@playwright/mcp'}></textarea>
+          <span>{t('参数')}</span>
+          <textarea bind:value={form.argsText} rows="3" placeholder={t('每行一个参数，如：\n-y\n@playwright/mcp')}></textarea>
         </div>
         <div class="field top">
-          <span>环境变量</span>
-          <textarea bind:value={form.envText} rows="3" placeholder={'每行一条 KEY=VALUE'}></textarea>
+          <span>{t('环境变量')}</span>
+          <textarea bind:value={form.envText} rows="3" placeholder={t('每行一条 KEY=VALUE')}></textarea>
         </div>
         <div class="field">
-          <span>工作目录</span>
-          <input bind:value={form.cwd} placeholder="（可空）" />
+          <span>{t('工作目录')}</span>
+          <input bind:value={form.cwd} placeholder={t('（可空）')} />
         </div>
       {:else}
         <div class="field">
-          <span>URL</span>
+          <span>{t('URL')}</span>
           <input bind:value={form.url} placeholder="https://…/mcp" />
         </div>
         <div class="field top">
-          <span>请求头</span>
-          <textarea bind:value={form.headersText} rows="3" placeholder={'每行一条 KEY=VALUE，如：\nAuthorization=Bearer …'}></textarea>
+          <span>{t('请求头')}</span>
+          <textarea bind:value={form.headersText} rows="3" placeholder={t('每行一条 KEY=VALUE，如：\nAuthorization=Bearer …')}></textarea>
         </div>
       {/if}
       <div class="modal-actions">
-        <button class="ghost" onclick={() => (showEditor = false)}>取消</button>
+        <button class="ghost" onclick={() => (showEditor = false)}>{t('取消')}</button>
         <button class="primary" disabled={saving} onclick={saveEditor}>
-          {saving ? '保存中…' : '保存'}
+          {saving ? t('保存中…') : t('保存')}
         </button>
       </div>
     </div>
@@ -340,13 +344,13 @@
       role="dialog"
       tabindex="-1"
     >
-      <h2>从其它工具导入 MCP server</h2>
+      <h2>{t('从其它工具导入 MCP server')}</h2>
       <div class="field">
-        <span>来源</span>
+        <span>{t('来源')}</span>
         <select bind:value={selectedSourceId}>
           {#each sources as s (s.id)}
             <option value={s.id} disabled={!s.exists}>
-              {s.label}{s.exists ? `（${s.servers.length} 项）` : '（配置不存在）'}
+              {s.label}{s.exists ? `（${s.servers.length} 项）` : t('（配置不存在）')}
             </option>
           {/each}
         </select>
@@ -376,22 +380,22 @@
                     else overwrite.delete(sv.name)
                   }}
                 >
-                  <option value="skip">跳过</option>
-                  <option value="overwrite">覆盖</option>
+                  <option value="skip">{t('跳过')}</option>
+                  <option value="overwrite">{t('覆盖')}</option>
                 </select>
               {:else if sv.conflict && sv.supported}
-                <span class="conflict-tag">已存在</span>
+                <span class="conflict-tag">{t('已存在')}</span>
               {/if}
             </div>
           {/each}
         {:else}
-          <p class="empty">该来源没有可导入的 MCP server。</p>
+          <p class="empty">{t('该来源没有可导入的 MCP server。')}</p>
         {/if}
       </div>
       <div class="modal-actions">
-        <button class="ghost" onclick={() => (showImport = false)}>取消</button>
+        <button class="ghost" onclick={() => (showImport = false)}>{t('取消')}</button>
         <button class="primary" disabled={importing || importableCount === 0} onclick={confirmImport}>
-          {importing ? '导入中…' : `导入 ${importableCount} 项`}
+          {importing ? t('导入中…') : t('导入完成', { count: importableCount })}
         </button>
       </div>
     </div>
@@ -424,11 +428,11 @@
   .tip {
     margin: 0;
     font-size: 12px;
-    color: #6b7484;
+    color: var(--text-3);
   }
   .card {
-    background: #171b26;
-    border: 1px solid #232838;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
     border-radius: 10px;
   }
   .list {
@@ -442,20 +446,20 @@
     padding: 24px;
     text-align: center;
     font-size: 13px;
-    color: #6b7484;
+    color: var(--text-3);
   }
   .row {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 10px 16px;
-    border-bottom: 1px solid #232838;
+    border-bottom: 1px solid var(--border);
   }
   .row:last-child {
     border-bottom: none;
   }
   .row:hover {
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--hover);
   }
   .row.disabled .meta {
     opacity: 0.55;
@@ -467,8 +471,8 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
-    color: #9aa3b2;
-    background: #2a3040;
+    color: var(--text-2);
+    background: var(--bg-track);
     border-radius: 4px;
     padding: 3px 0;
   }
@@ -481,19 +485,19 @@
   }
   .meta b {
     font-size: 13px;
-    color: #e6e8ee;
+    color: var(--text);
     font-weight: 600;
   }
   .desc {
     font-size: 12px;
-    color: #9aa3b2;
+    color: var(--text-2);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .state {
     font-size: 12px;
-    color: #9aa3b2;
+    color: var(--text-2);
     flex-shrink: 0;
   }
   .switch {
@@ -513,7 +517,7 @@
   .switch .track {
     position: absolute;
     inset: 0;
-    background: #2a3040;
+    background: var(--bg-track);
     border-radius: 10px;
     transition: background 0.15s;
   }
@@ -525,13 +529,13 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: #9aa3b2;
+    background: var(--text-2);
     transition:
       transform 0.15s,
       background 0.15s;
   }
   .switch input:checked + .track {
-    background: #1565c0;
+    background: var(--accent);
   }
   .switch input:checked + .track::after {
     transform: translateX(16px);
@@ -541,15 +545,15 @@
   .edit {
     background: transparent;
     border: none;
-    color: #6b7484;
+    color: var(--text-3);
     cursor: pointer;
     padding: 6px;
     border-radius: 6px;
     display: flex;
   }
   .trash:hover {
-    color: #ef5350;
-    background: rgba(239, 83, 80, 0.1);
+    color: var(--bad);
+    background: var(--bad-soft-bg);
   }
   .edit:hover {
     color: #64b5f6;
@@ -558,15 +562,15 @@
   .notice {
     margin: 0;
     font-size: 12px;
-    color: #4ac26b;
+    color: var(--ok);
   }
   .notice.err {
-    color: #ef5350;
+    color: var(--bad);
   }
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -575,8 +579,8 @@
     width: 560px;
     max-height: 85vh;
     overflow-y: auto;
-    background: #171b26;
-    border: 1px solid #232838;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 18px;
     display: flex;
@@ -592,7 +596,7 @@
     align-items: center;
     gap: 12px;
     font-size: 13px;
-    color: #9aa3b2;
+    color: var(--text-2);
   }
   .field.top {
     align-items: flex-start;
@@ -604,10 +608,10 @@
   select,
   input,
   textarea {
-    background: #0a0c10;
-    border: 1px solid #232838;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #e6e8ee;
+    color: var(--text);
     padding: 6px 8px;
     font-size: 13px;
     box-sizing: border-box;
@@ -625,7 +629,7 @@
     flex: 1;
   }
   .pick-list {
-    border: 1px solid #232838;
+    border: 1px solid var(--border);
     border-radius: 8px;
     overflow-y: auto;
     max-height: 320px;
@@ -635,7 +639,7 @@
     align-items: center;
     gap: 10px;
     padding: 8px 12px;
-    border-bottom: 1px solid #232838;
+    border-bottom: 1px solid var(--border);
   }
   .pick-row:last-child {
     border-bottom: none;
@@ -650,7 +654,7 @@
   }
   .conflict-tag {
     font-size: 12px;
-    color: #b58900;
+    color: var(--warn);
     flex-shrink: 0;
   }
   .conflict-choice {
@@ -673,12 +677,12 @@
     cursor: default;
   }
   .primary {
-    background: #1565c0;
+    background: var(--accent);
     color: #fff;
   }
   .ghost {
     background: transparent;
-    border: 1px solid #232838;
-    color: #9aa3b2;
+    border: 1px solid var(--border);
+    color: var(--text-2);
   }
 </style>

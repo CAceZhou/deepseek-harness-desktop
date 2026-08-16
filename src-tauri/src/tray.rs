@@ -1,4 +1,5 @@
 use crate::diagnostics::SharedState;
+use crate::i18n;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -12,19 +13,7 @@ pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_QUIT: &str = "quit";
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, MENU_OPEN, "打开主界面", true, None::<&str>)?;
-    let diagnostics = MenuItem::with_id(app, MENU_DIAGNOSTICS, "诊断面板", true, None::<&str>)?;
-    let skills = MenuItem::with_id(app, MENU_SKILLS, "技能管理", true, None::<&str>)?;
-    let mcp = MenuItem::with_id(app, MENU_MCP, "MCP管理", true, None::<&str>)?;
-    let restart = MenuItem::with_id(app, MENU_RESTART, "重启服务", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, MENU_SETTINGS, "其它设置", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(
-        app,
-        &[&open, &diagnostics, &skills, &mcp, &restart, &settings, &sep, &quit],
-    )?;
-
+    let menu = build_menu(app)?;
     TrayIconBuilder::with_id("main-tray")
         .tooltip("DSHDesktop")
         .icon(app.default_window_icon().unwrap().clone())
@@ -51,6 +40,78 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 按当前全局语言构建托盘菜单。locale 变化时由 theme 关注循环调用
+/// `apply_locale` 重建（Windows 托盘菜单不支持改文案，只能重建）。
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let open = MenuItem::with_id(
+        app,
+        MENU_OPEN,
+        i18n::pick("打开主界面", "Open main window"),
+        true,
+        None::<&str>,
+    )?;
+    let diagnostics = MenuItem::with_id(
+        app,
+        MENU_DIAGNOSTICS,
+        i18n::pick("诊断面板", "Diagnostics"),
+        true,
+        None::<&str>,
+    )?;
+    let skills = MenuItem::with_id(
+        app,
+        MENU_SKILLS,
+        i18n::pick("技能管理", "Skills"),
+        true,
+        None::<&str>,
+    )?;
+    let mcp = MenuItem::with_id(app, MENU_MCP, i18n::pick("MCP管理", "MCP servers"), true, None::<&str>)?;
+    let restart = MenuItem::with_id(
+        app,
+        MENU_RESTART,
+        i18n::pick("重启服务", "Restart service"),
+        true,
+        None::<&str>,
+    )?;
+    let settings = MenuItem::with_id(
+        app,
+        MENU_SETTINGS,
+        i18n::pick("其它设置", "Other settings"),
+        true,
+        None::<&str>,
+    )?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, i18n::pick("退出", "Quit"), true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[&open, &diagnostics, &skills, &mcp, &restart, &settings, &sep, &quit],
+    )?;
+    Ok(menu)
+}
+
+/// dsh 语言切换后：重建托盘菜单、刷新本地窗口标题（语言相关）。
+pub fn apply_locale(app: &AppHandle, _locale: &str) {
+    if let Ok(menu) = build_menu(app) {
+        if let Some(tray) = app.tray_by_id("main-tray") {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+    let titles: &[(&str, &str, &str)] = &[
+        ("diagnostics", "DSHDesktop 诊断面板", "DSHDesktop Diagnostics"),
+        ("settings", "DSHDesktop 设置", "DSHDesktop Settings"),
+        ("skills", "DSHDesktop 技能管理", "DSHDesktop Skills"),
+        ("mcp", "DSHDesktop MCP 管理", "DSHDesktop MCP Manager"),
+    ];
+    for (label, zh, en) in titles {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_title(&i18n::pick(*zh, *en));
+        }
+    }
+}
+
+fn window_title(zh: &str, en: &str) -> String {
+    i18n::pick(zh, en)
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -67,7 +128,7 @@ fn open_diagnostics(app: &AppHandle) {
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
     let _ = WebviewWindowBuilder::new(app, "diagnostics", WebviewUrl::App("index.html#/diagnostics".into()))
-        .title("DSHDesktop 诊断面板")
+        .title(window_title("DSHDesktop 诊断面板", "DSHDesktop Diagnostics"))
         .inner_size(900.0, 640.0)
         .visible(false)
         .build();
@@ -81,7 +142,7 @@ fn open_settings(app: &AppHandle) {
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html#/settings".into()))
-        .title("DSHDesktop 设置")
+        .title(window_title("DSHDesktop 设置", "DSHDesktop Settings"))
         .inner_size(760.0, 700.0)
         .visible(false)
         .build();
@@ -95,7 +156,7 @@ fn open_skills(app: &AppHandle) {
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
     let _ = WebviewWindowBuilder::new(app, "skills", WebviewUrl::App("index.html#/skills".into()))
-        .title("DSHDesktop 技能管理")
+        .title(window_title("DSHDesktop 技能管理", "DSHDesktop Skills"))
         .inner_size(860.0, 640.0)
         .visible(false)
         .build();
@@ -109,7 +170,7 @@ fn open_mcp(app: &AppHandle) {
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
     let _ = WebviewWindowBuilder::new(app, "mcp", WebviewUrl::App("index.html#/mcp".into()))
-        .title("DSHDesktop MCP 管理")
+        .title(window_title("DSHDesktop MCP 管理", "DSHDesktop MCP Manager"))
         .inner_size(900.0, 680.0)
         .visible(false)
         .build();

@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { onMount } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
+  import { t } from '../i18n'
 
   type SkillRow = { name: string; description: string; enabled: boolean }
   type SourceSkill = { name: string; description: string; conflict: boolean }
@@ -48,10 +49,10 @@
   }
 
   async function remove(row: SkillRow) {
-    if (!confirm(`删除技能「${row.name}」？仅删除本应用内的副本，源目录不受影响。`)) return
+    if (!confirm(t('删除技能确认', { name: row.name }))) return
     try {
       await invoke('delete_skill', { name: row.name })
-      notice = { kind: 'ok', text: `已删除「${row.name}」` }
+      notice = { kind: 'ok', text: t('已删除', { name: row.name }) }
       await load()
     } catch (e) {
       notice = { kind: 'err', text: String(e) }
@@ -91,9 +92,9 @@
       const ok = results.filter((r) => r.status === 'imported').length
       const skipped = results.filter((r) => r.status === 'skipped').length
       const failed = results.filter((r) => r.status === 'error')
-      const parts = [`导入 ${ok} 项`]
-      if (skipped) parts.push(`跳过 ${skipped} 项`)
-      if (failed.length) parts.push(`失败 ${failed.length} 项：${failed[0].error ?? ''}`)
+      const parts = [t('导入完成', { count: ok })]
+      if (skipped) parts.push(t('跳过完成', { count: skipped }))
+      if (failed.length) parts.push(t('失败完成', { count: failed.length, err: failed[0].error ?? '' }))
       notice = { kind: failed.length ? 'err' : 'ok', text: parts.join('，') }
       showImport = false
       await load()
@@ -107,31 +108,31 @@
 
 <main>
   <header>
-    <h1>技能管理</h1>
-    <button class="primary" onclick={openImport}>从外部 Agent 导入</button>
+    <h1>{t('技能管理')}</h1>
+    <button class="primary" onclick={openImport}>{t('从外部 Agent 导入')}</button>
   </header>
 
-  <p class="tip">启用后可在 dsh 会话中通过技能名使用；开关即时生效，无需重启服务。</p>
+  <p class="tip">{t('启用后可在 dsh 会话中通过技能名使用；开关即时生效，无需重启服务。')}</p>
 
   <section class="card list">
     {#if loading}
-      <p class="empty">加载中…</p>
+      <p class="empty">{t('加载中…')}</p>
     {:else if rows.length === 0}
-      <p class="empty">尚无技能，点击右上角「从外部 Agent 导入」开始。</p>
+      <p class="empty">{t('尚无技能，点击右上角「从外部 Agent 导入」开始。')}</p>
     {:else}
       {#each rows as row (row.name)}
         <div class="row" class:disabled={!row.enabled}>
           <span class="cube">⬡</span>
           <span class="meta">
             <b>{row.name}</b>
-            <span class="desc">{row.description || '（无描述）'}</span>
+            <span class="desc">{row.description || t('（无描述）')}</span>
           </span>
-          <span class="state">{row.enabled ? '已启用' : '已停用'}</span>
+          <span class="state">{row.enabled ? t('已启用') : t('已停用')}</span>
           <span class="switch">
             <input type="checkbox" checked={row.enabled} onchange={() => toggle(row)} />
             <span class="track"></span>
           </span>
-          <button class="trash" title="删除" onclick={() => remove(row)}>
+          <button class="trash" title={t('删除')} onclick={() => remove(row)}>
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
         </div>
@@ -153,13 +154,13 @@
       role="dialog"
       tabindex="-1"
     >
-      <h2>从外部 Agent 导入技能</h2>
+      <h2>{t('从外部 Agent 导入技能')}</h2>
       <div class="field">
-        <span>来源</span>
+        <span>{t('来源')}</span>
         <select bind:value={selectedSourceId}>
           {#each sources as s (s.id)}
             <option value={s.id} disabled={!s.exists}>
-              {s.label}{s.exists ? `（${s.skills.length} 项）` : '（目录不存在）'}
+              {s.label}{s.exists ? `（${s.skills.length} 项）` : t('（目录不存在）')}
             </option>
           {/each}
         </select>
@@ -176,7 +177,7 @@
                 />
                 <span class="meta">
                   <b>{sk.name}</b>
-                  <span class="desc">{sk.description || '（无描述）'}</span>
+                  <span class="desc">{sk.description || t('（无描述）')}</span>
                 </span>
               </label>
               {#if sk.conflict && checked.has(sk.name)}
@@ -188,22 +189,22 @@
                     else overwrite.delete(sk.name)
                   }}
                 >
-                  <option value="skip">跳过</option>
-                  <option value="overwrite">覆盖</option>
+                  <option value="skip">{t('跳过')}</option>
+                  <option value="overwrite">{t('覆盖')}</option>
                 </select>
               {:else if sk.conflict}
-                <span class="conflict-tag">已存在</span>
+                <span class="conflict-tag">{t('已存在')}</span>
               {/if}
             </div>
           {/each}
         {:else}
-          <p class="empty">该来源没有可导入的技能。</p>
+          <p class="empty">{t('该来源没有可导入的技能。')}</p>
         {/if}
       </div>
       <div class="modal-actions">
-        <button class="ghost" onclick={() => (showImport = false)}>取消</button>
+        <button class="ghost" onclick={() => (showImport = false)}>{t('取消')}</button>
         <button class="primary" disabled={importing || importableCount === 0} onclick={confirmImport}>
-          {importing ? '导入中…' : `导入 ${importableCount} 项`}
+          {importing ? t('导入中…') : t('导入完成', { count: importableCount })}
         </button>
       </div>
     </div>
@@ -232,11 +233,11 @@
   .tip {
     margin: 0;
     font-size: 12px;
-    color: #6b7484;
+    color: var(--text-3);
   }
   .card {
-    background: #171b26;
-    border: 1px solid #232838;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
     border-radius: 10px;
   }
   .list {
@@ -250,26 +251,26 @@
     padding: 24px;
     text-align: center;
     font-size: 13px;
-    color: #6b7484;
+    color: var(--text-3);
   }
   .row {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 10px 16px;
-    border-bottom: 1px solid #232838;
+    border-bottom: 1px solid var(--border);
   }
   .row:last-child {
     border-bottom: none;
   }
   .row:hover {
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--hover);
   }
   .row.disabled .meta {
     opacity: 0.55;
   }
   .cube {
-    color: #4a5265;
+    color: var(--text-4);
     font-size: 18px;
     width: 24px;
     text-align: center;
@@ -283,19 +284,19 @@
   }
   .meta b {
     font-size: 13px;
-    color: #e6e8ee;
+    color: var(--text);
     font-weight: 600;
   }
   .desc {
     font-size: 12px;
-    color: #9aa3b2;
+    color: var(--text-2);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .state {
     font-size: 12px;
-    color: #9aa3b2;
+    color: var(--text-2);
     flex-shrink: 0;
   }
   .switch {
@@ -315,7 +316,7 @@
   .switch .track {
     position: absolute;
     inset: 0;
-    background: #2a3040;
+    background: var(--bg-track);
     border-radius: 10px;
     transition: background 0.15s;
   }
@@ -327,13 +328,13 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: #9aa3b2;
+    background: var(--text-2);
     transition:
       transform 0.15s,
       background 0.15s;
   }
   .switch input:checked + .track {
-    background: #1565c0;
+    background: var(--accent);
   }
   .switch input:checked + .track::after {
     transform: translateX(16px);
@@ -342,28 +343,28 @@
   .trash {
     background: transparent;
     border: none;
-    color: #6b7484;
+    color: var(--text-3);
     cursor: pointer;
     padding: 6px;
     border-radius: 6px;
     display: flex;
   }
   .trash:hover {
-    color: #ef5350;
-    background: rgba(239, 83, 80, 0.1);
+    color: var(--bad);
+    background: var(--bad-soft-bg);
   }
   .notice {
     margin: 0;
     font-size: 12px;
-    color: #4ac26b;
+    color: var(--ok);
   }
   .notice.err {
-    color: #ef5350;
+    color: var(--bad);
   }
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -371,8 +372,8 @@
   .modal {
     width: 560px;
     max-height: 80vh;
-    background: #171b26;
-    border: 1px solid #232838;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 18px;
     display: flex;
@@ -388,13 +389,13 @@
     align-items: center;
     gap: 12px;
     font-size: 13px;
-    color: #9aa3b2;
+    color: var(--text-2);
   }
   select {
-    background: #0a0c10;
-    border: 1px solid #232838;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #e6e8ee;
+    color: var(--text);
     padding: 6px 8px;
     font-size: 13px;
     height: 32px;
@@ -404,7 +405,7 @@
     flex: 1;
   }
   .pick-list {
-    border: 1px solid #232838;
+    border: 1px solid var(--border);
     border-radius: 8px;
     overflow-y: auto;
     max-height: 320px;
@@ -414,7 +415,7 @@
     align-items: center;
     gap: 10px;
     padding: 8px 12px;
-    border-bottom: 1px solid #232838;
+    border-bottom: 1px solid var(--border);
   }
   .pick-row:last-child {
     border-bottom: none;
@@ -429,7 +430,7 @@
   }
   .conflict-tag {
     font-size: 12px;
-    color: #b58900;
+    color: var(--warn);
     flex-shrink: 0;
   }
   .conflict-choice {
@@ -452,12 +453,12 @@
     cursor: default;
   }
   .primary {
-    background: #1565c0;
+    background: var(--accent);
     color: #fff;
   }
   .ghost {
     background: transparent;
-    border: 1px solid #232838;
-    color: #9aa3b2;
+    border: 1px solid var(--border);
+    color: var(--text-2);
   }
 </style>

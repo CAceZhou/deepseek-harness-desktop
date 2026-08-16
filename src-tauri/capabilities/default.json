@@ -10,6 +10,7 @@
     "core:webview:default",
     "notification:default",
     "autostart:default",
+    "allow-get-shell-ui-state",
     "allow-get-status",
     "allow-restart-dsh",
     "allow-get-recent-logs",

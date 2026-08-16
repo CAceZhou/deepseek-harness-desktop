@@ -1,0 +1,131 @@
+import { uiState } from './ui.svelte'
+
+/**
+ * 本地页面文案：语言跟随 dsh 的 locale.preference（zh/en）。
+ * key 用中文原文，未命中（en 字典缺条目）时 fallback 回 key 本身——
+ * 字典不全会退回中文而不是出现裸 key。动态部分用 {var} 占位。
+ */
+const en: Record<string, string> = {
+  // 诊断面板
+  '诊断面板': 'Diagnostics',
+  '运行中': 'Running',
+  '启动中': 'Starting',
+  '已停止': 'Stopped',
+  '失败': 'Failed',
+  '版本': 'Version',
+  '端口': 'Port',
+  '进程 PID': 'Process PID',
+  '错误': 'Error',
+  '重启服务': 'Restart service',
+  '重启中…': 'Restarting…',
+  '服务日志': 'Service log',
+
+  // 其它设置
+  '其它设置': 'Other settings',
+  '通用': 'General',
+  '开机时自动启动': 'Launch at system startup',
+  '关闭主窗口时': 'When the main window closes',
+  '保持后台运行（最小化到托盘）': 'Keep running in the background (minimize to tray)',
+  '退出程序': 'Quit the app',
+  '任务完成通知': 'Completion notification',
+  '主窗口隐藏时，dsh 回答完成弹 Windows 通知': 'Show a Windows notification when dsh finishes while the main window is hidden',
+  '完成提示音': 'Completion sound',
+  '无提示音': 'Silent',
+  '系统默认': 'System default',
+  '消息': 'Message',
+  '邮件': 'Mail',
+  '提醒': 'Reminder',
+  '短信': 'SMS',
+  '轻铃': 'Chime',
+  '水滴': 'Drop',
+  '和弦': 'Mellow',
+  '试听': 'Preview',
+  '界面缩放': 'Interface zoom',
+  '每次放大/缩小比例': 'Zoom step',
+  '放大快捷键': 'Zoom in shortcut',
+  '缩小快捷键': 'Zoom out shortcut',
+  '按下快捷键…（Esc 取消）': 'Press a shortcut… (Esc to cancel)',
+  '保存': 'Save',
+  '保存中…': 'Saving…',
+  '恢复默认': 'Reset defaults',
+  '已保存，立即生效': 'Saved and applied',
+  '已恢复默认值，点击保存生效': 'Defaults restored, click Save to apply',
+  '快捷键必须包含 Ctrl/Shift/Alt 中至少一个修饰键': 'shortcut must include at least one modifier (Ctrl/Shift/Alt)',
+  '放大与缩小快捷键不能相同': 'Zoom in and zoom out shortcuts must differ',
+
+  // 技能管理
+  '技能管理': 'Skills',
+  '从外部 Agent 导入': 'Import from external agents',
+  '启用后可在 dsh 会话中通过技能名使用；开关即时生效，无需重启服务。': 'Enabled skills are usable by name in dsh sessions; toggling takes effect immediately.',
+  '加载中…': 'Loading…',
+  '尚无技能，点击右上角「从外部 Agent 导入」开始。': 'No skills yet. Click "Import from external agents" to get started.',
+  '已启用': 'Enabled',
+  '已停用': 'Disabled',
+  '删除': 'Delete',
+  '（无描述）': '(no description)',
+  '从外部 Agent 导入技能': 'Import skills from external agents',
+  '来源': 'Source',
+  '（目录不存在）': '(directory missing)',
+  '跳过': 'Skip',
+  '覆盖': 'Overwrite',
+  '已存在': 'Exists',
+  '该来源没有可导入的技能。': 'No skills available in this source.',
+  '取消': 'Cancel',
+  '导入中…': 'Importing…',
+  '删除技能确认': 'Delete skill "{name}"? Only the copy in this app is removed; the source directory is untouched.',
+  '已删除': 'Deleted "{name}"',
+  '导入完成': 'Imported {count}',
+  '跳过完成': 'skipped {count}',
+  '失败完成': '{count} failed: {err}',
+  '删除 MCP 确认': 'Delete MCP server "{name}"? dsh will disconnect from it immediately.',
+  '已保存': 'Saved "{name}"',
+  '已添加': 'Added "{name}"',
+  '编辑 Server': 'Edit server "{name}"',
+  '如 npx': 'e.g. npx',
+  '每行一个参数，如：\n-y\n@playwright/mcp': 'One argument per line, e.g.:\n-y\n@playwright/mcp',
+  '每行一条 KEY=VALUE': 'One KEY=VALUE per line',
+  '每行一条 KEY=VALUE，如：\nAuthorization=Bearer …': 'One KEY=VALUE per line, e.g.:\nAuthorization=Bearer …',
+
+  // MCP 管理
+  'MCP 管理': 'MCP Manager',
+  '新增 Server': 'New server',
+  '从其它工具导入': 'Import from other tools',
+  '配置写入 dsh 的 cordis.patch.yml，热重载即时生效，无需重启服务。': 'Config is written to dsh\'s cordis.patch.yml and hot-reloads immediately.',
+  '尚无 MCP server，点击右上角「新增 Server」或「从其它工具导入」开始。': 'No MCP servers yet. Click "New server" or "Import from other tools" to get started.',
+  '（无命令/地址）': '(no command/URL)',
+  '编辑': 'Edit',
+  '名称': 'Name',
+  '字母/数字/_/-，最长 32': 'Letters/digits/_/-，max 32',
+  '类型': 'Type',
+  'stdio（本地命令）': 'stdio (local command)',
+  'streamable-http（远程 URL）': 'streamable-http (remote URL)',
+  '命令': 'Command',
+  '参数': 'Arguments',
+  '环境变量': 'Environment variables',
+  '工作目录': 'Working directory',
+  '（可空）': '(optional)',
+  'URL': 'URL',
+  '请求头': 'Request headers',
+  '从其它工具导入 MCP server': 'Import MCP servers from other tools',
+  '（配置不存在）': '(config missing)',
+  '该来源没有可导入的 MCP server。': 'No MCP servers available in this source.',
+
+  // 启动画面
+  '首次启动需要部署运行时，可能要花几分钟，请耐心等待': 'First launch deploys the runtime; this may take a few minutes.',
+  '正在准备运行时…': 'Preparing runtime…',
+  '准备运行时': 'Preparing runtime',
+  '启动 dsh 服务': 'Starting dsh service',
+  '等待服务就绪': 'Waiting for service',
+  '打开界面': 'Opening interface',
+}
+
+export function t(key: string, vars?: Record<string, string | number>): string {
+  const dict = uiState().locale === 'en' ? en : undefined
+  let s = dict?.[key] ?? key
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      s = s.replaceAll(`{${k}}`, String(v))
+    }
+  }
+  return s
+}

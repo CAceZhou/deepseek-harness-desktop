@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { onMount, onDestroy } from 'svelte'
+  import { t } from '../i18n'
 
   type Status = { state: string; port: number | null; pid: number | null; version: string }
 
@@ -14,12 +15,12 @@
     !status
       ? '…'
       : status.state.startsWith('Ready')
-        ? '运行中'
+        ? t('运行中')
         : status.state === 'Starting'
-          ? '启动中'
+          ? t('启动中')
           : status.state === 'Stopped'
-            ? '已停止'
-            : '失败',
+            ? t('已停止')
+            : t('失败'),
   )
 
   async function refresh() {
@@ -61,26 +62,26 @@
 
 <main>
   <header>
-    <h1>诊断面板</h1>
-    <span class="badge" class:ok={stateText === '运行中'} class:bad={stateText === '失败'}>{stateText}</span>
+    <h1>{t('诊断面板')}</h1>
+    <span class="badge" class:ok={stateText === t('运行中')} class:bad={stateText === t('失败')}>{stateText}</span>
   </header>
 
   <section class="card">
-    <div class="row"><span>版本</span><b>{status?.version ?? '…'}</b></div>
-    <div class="row"><span>端口</span><b>{status?.port ?? '—'}</b></div>
-    <div class="row"><span>进程 PID</span><b>{status?.pid ?? '—'}</b></div>
+    <div class="row"><span>{t('版本')}</span><b>{status?.version ?? '…'}</b></div>
+    <div class="row"><span>{t('端口')}</span><b>{status?.port ?? '—'}</b></div>
+    <div class="row"><span>{t('进程 PID')}</span><b>{status?.pid ?? '—'}</b></div>
     {#if status && status.state.startsWith('Failed')}
-      <div class="row"><span>错误</span><b class="bad">{status.state}</b></div>
+      <div class="row"><span>{t('错误')}</span><b class="bad">{status.state}</b></div>
     {/if}
   </section>
 
   <section class="actions">
     <button onclick={restart} disabled={restarting}>
-      {restarting ? '重启中…' : '重启服务'}
+      {restarting ? t('重启中…') : t('重启服务')}
     </button>
   </section>
 
-  <h2>服务日志</h2>
+  <h2>{t('服务日志')}</h2>
   <pre class="logs" bind:this={logEl}>{#each logs as line}{line + '\n'}{/each}</pre>
 </main>
 
@@ -104,7 +105,7 @@
   }
   h2 {
     font-size: 13px;
-    color: #9aa3b2;
+    color: var(--text-2);
     margin: 4px 0 0;
     font-weight: 600;
   }
@@ -112,20 +113,20 @@
     font-size: 12px;
     padding: 2px 10px;
     border-radius: 10px;
-    background: #232838;
-    color: #9aa3b2;
+    background: var(--bg-track);
+    color: var(--text-2);
   }
   .badge.ok {
     background: rgba(46, 160, 67, 0.18);
-    color: #4ac26b;
+    color: var(--ok);
   }
   .badge.bad {
-    background: rgba(239, 83, 80, 0.15);
-    color: #ef5350;
+    background: var(--bad-soft-bg);
+    color: var(--bad);
   }
   .card {
-    background: #171b26;
-    border: 1px solid #232838;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px 16px;
     display: flex;
@@ -136,14 +137,14 @@
     display: flex;
     justify-content: space-between;
     font-size: 13px;
-    color: #9aa3b2;
+    color: var(--text-2);
   }
   .row b {
-    color: #e6e8ee;
+    color: var(--text);
     font-weight: 500;
   }
   .row b.bad {
-    color: #ef5350;
+    color: var(--bad);
   }
   .actions {
     display: flex;
@@ -151,7 +152,7 @@
     gap: 18px;
   }
   button {
-    background: #1565c0;
+    background: var(--accent);
     color: #fff;
     border: none;
     border-radius: 8px;
@@ -166,15 +167,15 @@
   .logs {
     flex: 1;
     margin: 0;
-    background: #0a0c10;
-    border: 1px solid #232838;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px;
     overflow-y: auto;
     font-family: 'Cascadia Mono', Consolas, monospace;
     font-size: 12px;
     line-height: 1.55;
-    color: #b8c0d0;
+    color: var(--text-2);
     white-space: pre-wrap;
     word-break: break-all;
   }

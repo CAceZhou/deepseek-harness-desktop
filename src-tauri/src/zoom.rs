@@ -85,7 +85,12 @@ pub fn zoom_ui(
     let delta = match direction {
         "in" => step,
         "out" => -step,
-        other => return Err(format!("未知缩放方向: {other}")),
+        other => {
+            return Err(crate::i18n::pick(
+                format!("未知缩放方向: {other}"),
+                format!("Unknown zoom direction: {other}"),
+            ))
+        }
     };
     let v = state.adjust(delta);
     apply_to_main(&app, v);

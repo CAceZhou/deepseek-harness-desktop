@@ -110,8 +110,8 @@ pub fn handle_mux_frame(frame: &str, sink: &NotifySink, book: &Mutex<SessionBook
                 return;
             }
             let body = match book.title(session_id) {
-                Some(t) => format!("「{t}」回答完成"),
-                None => "dsh 回答完成".to_string(),
+                Some(t) => crate::i18n::pick(format!("「{t}」回答完成"), format!("“{t}” completed")),
+                None => crate::i18n::pick("dsh 回答完成", "dsh completed its reply"),
             };
             sink(Notification {
                 title: "DSHDesktop".into(),
@@ -166,9 +166,14 @@ fn summarize_attention(frame: &str) -> String {
         .and_then(|t| t.as_str())
         .map(String::from);
     match method.as_deref() {
-        Some("approval/requested") => "dsh 有一个操作等待你批准".to_string(),
-        Some("question/requested") => "dsh 有一个问题等待你回答".to_string(),
-        Some(m) => format!("dsh 事件：{m}"),
+        Some("approval/requested") => crate::i18n::pick(
+            "dsh 有一个操作等待你批准",
+            "dsh has an operation waiting for your approval",
+        ),
+        Some("question/requested") => {
+            crate::i18n::pick("dsh 有一个问题等待你回答", "dsh has a question waiting for you")
+        }
+        Some(m) => crate::i18n::pick(format!("dsh 事件：{m}"), format!("dsh event: {m}")),
         None => frame.chars().take(80).collect(),
     }
 }

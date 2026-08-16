@@ -31,11 +31,14 @@ url = "2"
 tokio-tungstenite = "0.26"
 serde_yaml = "0.9"
 toml = "0.8"
+axum = { version = "0.8", features = ["ws"] }
+rand = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Dwm",
     "Win32_Media_Audio",
 ] }

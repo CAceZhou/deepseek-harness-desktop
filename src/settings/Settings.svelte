@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
   import { onMount } from 'svelte'
+  import { t } from '../i18n'
 
   type Shortcut = { ctrl: boolean; shift: boolean; alt: boolean; code: string; key: string }
   type CompletionSound = 'silent' | 'default' | 'im' | 'mail' | 'reminder' | 'sms' | 'chime' | 'drop' | 'mellow'
@@ -23,6 +24,7 @@
     completion_sound: 'default',
   }
 
+  // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
   const SOUND_OPTIONS: { value: CompletionSound; label: string }[] = [
     { value: 'silent', label: '无提示音' },
     { value: 'default', label: '系统默认' },
@@ -109,10 +111,12 @@
   }
 
   function clientValidate(): string | null {
-    for (const [name, sc] of [['放大', zoomIn], ['缩小', zoomOut]] as const) {
-      if (!(sc.ctrl || sc.shift || sc.alt)) return `${name}快捷键必须包含 Ctrl/Shift/Alt 中至少一个修饰键`
+    for (const [name, sc] of [[t('放大'), zoomIn], [t('缩小'), zoomOut]] as const) {
+      if (!(sc.ctrl || sc.shift || sc.alt)) {
+        return `${name}${t('快捷键必须包含 Ctrl/Shift/Alt 中至少一个修饰键')}`
+      }
     }
-    if (sameShortcut(zoomIn, zoomOut)) return '放大与缩小快捷键不能相同'
+    if (sameShortcut(zoomIn, zoomOut)) return t('放大与缩小快捷键不能相同')
     return null
   }
 
@@ -135,7 +139,7 @@
       }
       await invoke('set_shell_settings', { next })
       await invoke('set_autostart', { enabled: autostart })
-      notice = { kind: 'ok', text: '已保存，立即生效' }
+      notice = { kind: 'ok', text: t('已保存，立即生效') }
     } catch (e) {
       notice = { kind: 'err', text: String(e) }
     } finally {
@@ -146,7 +150,7 @@
   function resetDefaults() {
     applyState(structuredClone(DEFAULTS))
     autostart = false
-    notice = { kind: 'ok', text: '已恢复默认值，点击保存生效' }
+    notice = { kind: 'ok', text: t('已恢复默认值，点击保存生效') }
   }
 
   // 试听：toast 的音效是它的属性，只能连同通知一起听
@@ -161,39 +165,39 @@
 
 <main>
   <header>
-    <h1>其它设置</h1>
+    <h1>{t('其它设置')}</h1>
   </header>
 
   <section class="card">
-    <h2>通用</h2>
+    <h2>{t('通用')}</h2>
     <label class="check">
       <input type="checkbox" bind:checked={autostart} />
-      开机时自动启动
+      {t('开机时自动启动')}
     </label>
     <div class="divider"></div>
-    <span class="group-label">关闭主窗口时</span>
+    <span class="group-label">{t('关闭主窗口时')}</span>
     <label class="check">
       <input type="radio" bind:group={closeBehavior} value="background" />
-      保持后台运行（最小化到托盘）
+      {t('保持后台运行（最小化到托盘）')}
     </label>
     <label class="check">
       <input type="radio" bind:group={closeBehavior} value="quit" />
-      退出程序
+      {t('退出程序')}
     </label>
   </section>
 
   <section class="card">
-    <h2>任务完成通知</h2>
+    <h2>{t('任务完成通知')}</h2>
     <label class="check">
       <input type="checkbox" bind:checked={notifyOnCompletion} />
-      主窗口隐藏时，dsh 回答完成弹 Windows 通知
+      {t('主窗口隐藏时，dsh 回答完成弹 Windows 通知')}
     </label>
     <div class="row">
-      <span>完成提示音</span>
+      <span>{t('完成提示音')}</span>
       <span class="control">
         <select bind:value={completionSound} disabled={!notifyOnCompletion}>
           {#each SOUND_OPTIONS as opt (opt.value)}
-            <option value={opt.value}>{opt.label}</option>
+            <option value={opt.value}>{t(opt.label)}</option>
           {/each}
         </select>
         <button
@@ -201,37 +205,37 @@
           onclick={previewSound}
           disabled={!notifyOnCompletion || completionSound === 'silent'}
         >
-          试听
+          {t('试听')}
         </button>
       </span>
     </div>
   </section>
 
   <section class="card">
-    <h2>界面缩放</h2>
+    <h2>{t('界面缩放')}</h2>
     <div class="row">
-      <span>每次放大/缩小比例</span>
+      <span>{t('每次放大/缩小比例')}</span>
       <span class="control">
         <input type="number" min="1" max="25" bind:value={stepPct} /> %
       </span>
     </div>
     <div class="row">
-      <span>放大快捷键</span>
+      <span>{t('放大快捷键')}</span>
       <button class="recorder" class:recording={recording === 'in'} onclick={() => record('in')}>
-        {recording === 'in' ? '按下快捷键…（Esc 取消）' : shortcutLabel(zoomIn)}
+        {recording === 'in' ? t('按下快捷键…（Esc 取消）') : shortcutLabel(zoomIn)}
       </button>
     </div>
     <div class="row">
-      <span>缩小快捷键</span>
+      <span>{t('缩小快捷键')}</span>
       <button class="recorder" class:recording={recording === 'out'} onclick={() => record('out')}>
-        {recording === 'out' ? '按下快捷键…（Esc 取消）' : shortcutLabel(zoomOut)}
+        {recording === 'out' ? t('按下快捷键…（Esc 取消）') : shortcutLabel(zoomOut)}
       </button>
     </div>
   </section>
 
   <section class="actions">
-    <button class="primary" onclick={save} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
-    <button class="ghost" onclick={resetDefaults}>恢复默认</button>
+    <button class="primary" onclick={save} disabled={saving}>{saving ? t('保存中…') : t('保存')}</button>
+    <button class="ghost" onclick={resetDefaults}>{t('恢复默认')}</button>
     {#if notice}
       <p class="notice" class:err={notice.kind === 'err'}>{notice.text}</p>
     {/if}
@@ -260,13 +264,13 @@
   h2 {
     font-size: 12px;
     letter-spacing: 0.08em;
-    color: #9aa3b2;
+    color: var(--text-2);
     margin: 0;
     font-weight: 600;
   }
   .card {
-    background: #171b26;
-    border: 1px solid #232838;
+    background: var(--bg-raise);
+    border: 1px solid var(--border);
     border-radius: 10px;
     padding: 16px 18px;
     display: flex;
@@ -279,32 +283,32 @@
     align-items: center;
     min-height: 36px;
     font-size: 13px;
-    color: #9aa3b2;
+    color: var(--text-2);
   }
   .control {
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #e6e8ee;
+    color: var(--text);
   }
   input[type='number'] {
     width: 64px;
     height: 32px;
     box-sizing: border-box;
-    background: #0a0c10;
-    border: 1px solid #232838;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #e6e8ee;
+    color: var(--text);
     padding: 6px 8px;
     font-size: 13px;
   }
   select {
     height: 32px;
     box-sizing: border-box;
-    background: #0a0c10;
-    border: 1px solid #232838;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #e6e8ee;
+    color: var(--text);
     padding: 6px 8px;
     font-size: 13px;
   }
@@ -322,47 +326,47 @@
     height: 32px;
     box-sizing: border-box;
     text-align: center;
-    background: #0a0c10;
-    border: 1px solid #232838;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #e6e8ee;
+    color: var(--text);
     padding: 6px 12px;
     font-size: 13px;
     cursor: pointer;
   }
   .recorder.recording {
-    border-color: #1565c0;
-    color: #64a3e8;
+    border-color: var(--accent);
+    color: var(--accent-soft);
   }
   .check {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 13px;
-    color: #9aa3b2;
+    color: var(--text-2);
     cursor: pointer;
   }
   .divider {
     height: 1px;
-    background: #232838;
+    background: var(--border);
   }
   .group-label {
     font-size: 13px;
-    color: #9aa3b2;
+    color: var(--text-2);
   }
   .notice {
     margin: 0;
     font-size: 12px;
-    color: #4ac26b;
+    color: var(--ok);
   }
   .notice.err {
-    color: #ef5350;
+    color: var(--bad);
   }
   .actions {
     display: flex;
     align-items: center;
     gap: 12px;
-    border-top: 1px solid #232838;
+    border-top: 1px solid var(--border);
     padding-top: 16px;
   }
   .actions button {
@@ -377,12 +381,12 @@
     cursor: default;
   }
   .primary {
-    background: #1565c0;
+    background: var(--accent);
     color: #fff;
   }
   .ghost {
     background: transparent;
-    border: 1px solid #232838 !important;
-    color: #9aa3b2;
+    border: 1px solid var(--border) !important;
+    color: var(--text-2);
   }
 </style>

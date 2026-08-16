@@ -8,6 +8,10 @@ impl Platform for WindowsPlatform {
         "node.exe"
     }
 
+    fn cloudflared_exe_name(&self) -> &'static str {
+        "cloudflared.exe"
+    }
+
     fn runtime_base_dir(&self) -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -43,6 +47,13 @@ impl Platform for WindowsPlatform {
             .unwrap_or(false)
     }
 
+    fn system_prefers_chinese(&self) -> bool {
+        // LANGID 低 10 位是主语言 ID，0x04 = LANG_CHINESE（简繁都算）
+        const LANG_CHINESE: u16 = 0x04;
+        let lang = unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() };
+        lang & 0x3FF == LANG_CHINESE
+    }
+
     fn play_sound_file(&self, path: &Path) -> Result<(), String> {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Media::Audio::PlaySoundW;
@@ -50,7 +61,10 @@ impl Platform for WindowsPlatform {
         const SND_FILENAME: u32 = 0x0002_0000;
         const SND_NOSTOP: u32 = 0x0010; // 不打断正在播放的上一声音效（连播排队交给系统混音）
         if !path.is_file() {
-            return Err(format!("音效文件不存在: {}", path.display()));
+            return Err(crate::i18n::pick(
+                format!("音效文件不存在: {}", path.display()),
+                format!("Sound file not found: {}", path.display()),
+            ));
         }
         let wide: Vec<u16> = path
             .as_os_str()
@@ -62,7 +76,7 @@ impl Platform for WindowsPlatform {
             PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), SND_FILENAME | SND_ASYNC | SND_NOSTOP)
         };
         if ok == 0 {
-            Err("PlaySoundW 播放失败".into())
+            Err(crate::i18n::pick("PlaySoundW 播放失败", "PlaySoundW playback failed").into())
         } else {
             Ok(())
         }

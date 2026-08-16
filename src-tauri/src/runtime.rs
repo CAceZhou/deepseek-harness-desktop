@@ -18,6 +18,8 @@ pub struct RuntimePaths {
     pub dsh_bin: PathBuf,
     pub home: PathBuf,
     pub work_dir: PathBuf,
+    /// 远程访问隧道（cloudflared）；可能不存在，缺失检查在使用方（remote 模块）
+    pub cloudflared_exe: PathBuf,
 }
 
 /// 确定运行时路径。
@@ -71,6 +73,7 @@ fn paths_for(
         home,
         // cwd 保持在可写的应用数据目录，与运行时本体解耦
         work_dir: base,
+        cloudflared_exe: runtime_dir.join(platform.cloudflared_exe_name()),
     }
 }
 
@@ -162,6 +165,9 @@ mod tests {
         fn node_exe_name(&self) -> &'static str {
             "node.exe"
         }
+        fn cloudflared_exe_name(&self) -> &'static str {
+            "cloudflared.exe"
+        }
         fn runtime_base_dir(&self) -> PathBuf {
             self.base.clone()
         }
@@ -174,6 +180,9 @@ mod tests {
         fn kill_process_tree(&self, _pid: u32) {}
         fn system_dark_mode(&self) -> bool {
             false
+        }
+        fn system_prefers_chinese(&self) -> bool {
+            true
         }
         fn play_sound_file(&self, _path: &Path) -> Result<(), String> {
             Ok(())
@@ -202,7 +211,7 @@ mod tests {
         let p = TestPlatform { base: base.path().to_path_buf() };
         let paths = ensure_runtime(&p, &src, "0.1.0", None).unwrap();
         assert_eq!(paths.node_exe, src.join("node.exe"), "应原地运行而非复制");
-        // assert_eq!(paths.cloudflared_exe, src.join("cloudflared.exe")); // TODO: cloudflared 未完成 WIP，阻塞编译，暂时注释（MCP 功能会话）
+        assert_eq!(paths.cloudflared_exe, src.join("cloudflared.exe"));
         assert!(!base.path().join("runtime").exists(), "不应产生部署副本");
         assert!(paths.home.is_dir());
     }

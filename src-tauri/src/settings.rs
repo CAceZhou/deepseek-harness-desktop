@@ -150,13 +150,23 @@ impl ShellSettings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        for (name, sc) in [("放大", &self.zoom_in), ("缩小", &self.zoom_out)] {
+        for (name, sc) in [
+            (crate::i18n::pick("放大", "Zoom in"), &self.zoom_in),
+            (crate::i18n::pick("缩小", "Zoom out"), &self.zoom_out),
+        ] {
             if !(sc.ctrl || sc.shift || sc.alt) {
-                return Err(format!("{name}快捷键必须包含 Ctrl/Shift/Alt 中至少一个修饰键"));
+                return Err(crate::i18n::pick(
+                    format!("{name}快捷键必须包含 Ctrl/Shift/Alt 中至少一个修饰键"),
+                    format!("{name} shortcut must include at least one modifier (Ctrl/Shift/Alt)"),
+                ));
             }
         }
         if self.zoom_in == self.zoom_out {
-            return Err("放大与缩小快捷键不能相同".into());
+            return Err(crate::i18n::pick(
+                "放大与缩小快捷键不能相同",
+                "Zoom in and zoom out shortcuts must differ",
+            )
+            .into());
         }
         Ok(())
     }
@@ -223,7 +233,7 @@ pub fn preview_completion_sound(
         .notification()
         .builder()
         .title("DSHDesktop")
-        .body("任务完成提示音试听");
+        .body(crate::i18n::pick("任务完成提示音试听", "Completion sound preview"));
     if let Some(rel) = sound.custom_wav() {
         match crate::resolve_custom_sound(&app, rel) {
             Some(p) => platform.play_sound_file(&p)?,

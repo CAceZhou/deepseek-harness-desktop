@@ -2,6 +2,7 @@
   import { listen } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
   import { onMount, onDestroy } from 'svelte'
+  import { t } from '../i18n'
 
   type ProgressPayload = { stage: string; message: string; percent: number | null }
 
@@ -10,14 +11,14 @@
 
   let firstLaunch = $state(false)
   let stage = $state('runtime')
-  let message = $state('正在准备运行时…')
+  let message = $state(t('正在准备运行时…'))
   let floor = $state(0)      // 后端给定的进度下限（只增不减）
   let displayed = $state(0)  // 实际展示的百分比（含缓动）
   let unlistenProgress: (() => void) | undefined
 
   let isError = $derived(stage === 'error')
 
-  // 首启进度条的阶段清单；currentStep 之前的全部视为已完成
+  // 首启进度条的阶段清单；currentStep 之前的全部视为已完成（语言跟随 dsh）
   const steps = ['准备运行时', '启动 dsh 服务', '等待服务就绪', '打开界面']
   let currentStep = $derived(
     stage === 'ready'
@@ -52,11 +53,11 @@
   // 就绪事件到达时 percent=100 直接把 displayed 拉满
   $effect(() => {
     if (firstLaunch && stage === 'starting' && !isError) {
-      const t = setInterval(() => {
+      const tm = setInterval(() => {
         displayed += (CEILING - displayed) * 0.045
         if (CEILING - displayed < 0.5) displayed = CEILING
       }, 200)
-      return () => clearInterval(t)
+      return () => clearInterval(tm)
     }
   })
 
@@ -78,7 +79,7 @@
     <p class="error">{message}</p>
   {:else if firstLaunch}
     <p>{message}</p>
-    <p class="hint">首次启动需要部署运行时，可能要花几分钟，请耐心等待</p>
+    <p class="hint">{t('首次启动需要部署运行时，可能要花几分钟，请耐心等待')}</p>
     <div class="pct">{Math.round(displayed)}%</div>
     <div class="track">
       <div class="determinate" style="width: {Math.min(displayed, 100)}%"></div>
@@ -87,7 +88,7 @@
       {#each steps as label, i}
         <li class:done={i < currentStep} class:active={i === currentStep}>
           <span class="mark">{i < currentStep ? '✓' : i === currentStep ? '●' : '○'}</span>
-          {label}
+          {t(label)}
         </li>
       {/each}
     </ul>
@@ -107,71 +108,41 @@
     justify-content: center;
     height: 100%;
     gap: 12px;
-    background: #0f1115;
-  }
-  /* 浅色系统：标题栏跟随系统为浅色，splash 内容同步浅色避免割裂。
-     （首启播种已让 dsh UI 跟随系统，这里补齐 splash 这一阶段） */
-  @media (prefers-color-scheme: light) {
-    main {
-      background: #f5f6f8;
-    }
-    h1 {
-      color: #1a1d24;
-    }
-    p {
-      color: #5c6472;
-    }
-    .hint {
-      color: #8a919e;
-    }
-    .pct {
-      color: #1a1d24;
-    }
-    .track {
-      background: #dde1e8;
-    }
-    .steps {
-      color: #8a919e;
-    }
-    .steps li.active {
-      color: #1a1d24;
-    }
-    .steps li.done {
-      color: #4c8a4c;
-    }
+    background: var(--bg);
   }
   h1 {
     font-size: 22px;
     font-weight: 600;
     letter-spacing: 0.5px;
     margin: 0;
+    color: var(--text);
   }
   p {
     margin: 0;
-    color: #9aa3b2;
+    color: var(--text-2);
     font-size: 14px;
   }
   p.error {
-    color: #ef5350;
+    color: var(--bad);
     max-width: 70%;
     text-align: center;
     line-height: 1.5;
   }
   .hint {
     font-size: 12px;
-    color: #5c6472;
+    color: var(--text-3);
   }
   .pct {
     font-size: 28px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    color: #e6e8ee;
+    color: var(--text);
   }
   .track {
     width: 260px;
     height: 4px;
     border-radius: 2px;
-    background: #232838;
+    background: var(--border);
     overflow: hidden;
   }
   .track.narrow {
@@ -180,14 +151,14 @@
   .determinate {
     height: 100%;
     border-radius: 2px;
-    background: #1565c0;
+    background: var(--accent);
     transition: width 0.25s ease-out;
   }
   .slide {
     height: 100%;
     width: 40%;
     border-radius: 2px;
-    background: #1565c0;
+    background: var(--accent);
     animation: slide 1.2s ease-in-out infinite;
   }
   @keyframes slide {
@@ -202,7 +173,7 @@
     flex-direction: column;
     gap: 6px;
     font-size: 13px;
-    color: #5c6472;
+    color: var(--text-3);
   }
   .steps li {
     display: flex;
@@ -210,10 +181,10 @@
     gap: 8px;
   }
   .steps li.active {
-    color: #e6e8ee;
+    color: var(--text);
   }
   .steps li.done {
-    color: #7ea87e;
+    color: var(--ok-strong);
   }
   .steps .mark {
     display: inline-block;

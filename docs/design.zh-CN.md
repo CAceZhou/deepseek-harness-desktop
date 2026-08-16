@@ -145,17 +145,19 @@ dsh WS /api/events.host ─▶ WsSource(host) ─▶ handle_host_frame ─▶ Se
 - sink 只在主窗口隐藏（托盘态）时弹通知，避免打扰正在操作的用户；弹前写一行 `Notify: {kind} {body}` 到 events.log（通知链路的现场诊断抓手）。
 - **完成通知设置**（settings.json）：`notify_on_completion`（默认开）+ `completion_sound`（silent/default/im/mail/reminder/sms，默认 default）。音效透传 toast 音频预设（`ms-winsoundevent:Notification.*`，系统内置、不受用户声音方案影响；不传 sound 则 toast 静音——Attention 类即如此）。试听走 `preview_completion_sound` 命令，弹一条带所选音效的 toast（音效是 toast 的属性，只能连通知一起听）。
 
-## 8. 主题跟随
+## 8. 主题与语言跟随
 
-目标：dsh 设置里的 `ui-theme.preference`（light/dark/system，存于 `$DSH_HOME/settings.yaml`）变化时，应用所有窗口的标题栏跟着变。
+目标：dsh 设置里的 `ui-theme.preference`（light/dark/system，存于 `$DSH_HOME/settings.yaml`）变化时，应用所有窗口的**标题栏**跟着变；本地页面（splash/诊断/设置/技能/MCP）与托盘菜单也同步；界面语言跟随 dsh 的 `locale.preference`（zh/en，缺省按系统 UI 语言）。
 
-- **2s 轮询**配置文件（文件极小，轮询比 inotify 简单且跨平台无差异）；`system` 经注册表 `AppsUseLightTheme` 解析。
+- **2s 轮询**配置文件（文件极小，轮询比 inotify 简单且跨平台无差异）；`system` 经注册表 `AppsUseLightTheme` 解析。语言同理读 `locale.preference`，缺省按 `GetUserDefaultUILanguage` 主语言 ID 是否中文（dsh 侧缺省"跟随浏览器"，WebView2 的浏览器语言同样来自系统）。
 - **首启播种（seed_theme_preference）**：dsh 在 settings.yaml 缺失/无 preference 时**缺省渲染浅色 UI**，而壳标题栏缺省跟随系统——系统为深色时首启出现"深标题栏 + 浅内容"。ensure_runtime 之后、spawn_supervised 之前，若 settings.yaml 不存在则按系统深浅色预写 `ui-theme.preference`（dark/light，无 BOM），dsh 首启即与壳一致。已存在的文件绝不动。
-- **splash 浅色适配**：splash 页面随 `prefers-color-scheme` 切换深浅配色，浅色系统下与浅色标题栏一致。
-- **BOM 陷阱（已修复，勿回退）**：PowerShell 5.1 的 `Set-Content -Encoding utf8` 会写入 UTF-8 BOM，而 yaml-rust 不接受 BOM——解析失败会**静默回退 system 主题**，表象是"标题栏永远白色"。`read_theme_preference` 先剥 BOM 再解析。教训：**不要用 PowerShell 改写 settings.yaml**。
+- **本地页面**：页面加载时 `invoke('get_shell_ui_state')` 取快照、订阅 `shell-ui-state` 事件（2s 轮询解析值变化才广播）。`ui.svelte.ts` 把快照写入 `<html data-theme="dark|light">` + `color-scheme`；`app.css` 以 CSS 变量承载全部颜色（`:root` 暗色默认 + `html[data-theme='light']` 浅色覆盖），五个 Svelte 页面只引用变量。JS 未跑的 splash 首帧按 `@media (prefers-color-scheme: light)` 兜底渲染（与首启播种的"系统色即主题"一致）。
+- **托盘菜单**：Windows 托盘右键菜单不响应 DWM 属性，用 uxtheme 未文档化 API `SetPreferredAppMode(ForceDark=2 / ForceLight=3)` + `FlushMenuThemes()`（tao 同源做法；uxtheme 常驻进程，LoadLibraryA 无需 FreeLibrary），在 `apply` 时随解析主题刷新。
+- **BOM 陷阱（已修复，勿回退）**：PowerShell 5.1 的 `Set-Content -Encoding utf8` 会写入 UTF-8 BOM，而 yaml-rust 不接受 BOM——解析失败会**静默回退 system 主题**，表象是"标题栏永远白色"。`read_preference` 先剥 BOM 再解析。教训：**不要用 PowerShell 改写 settings.yaml**。
 - **Windows 双管齐下**：
   1. `window.set_theme()` 同步 tao 内部主题状态——不同步的话，tao 可能在窗口事件后用缓存的旧状态覆盖可视效果。隐藏窗口上调用可能报错甚至 panic，必须 `catch_unwind` 兜住；
   2. 直接对 HWND 调 `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE=20)`——无缓存、幂等、对隐藏窗口同样生效，是标题栏颜色的权威来源。attr 20 失败（E_INVALIDARG）时回退旧值 19（Win10 20H1 之前）。
+- **语言**：`theme.rs` 的轮询把解析后的 locale 写入 `i18n.rs` 全局原子（`i18n::pick(zh, en)` 取当前语言，托盘菜单/窗口标题/进度/通知/命令错误文案全部经它取）；locale 变化时重建托盘菜单（`tray::apply_locale`，Windows 托盘菜单不能改文案只能重建）并刷新本地窗口标题；前端 `i18n.ts` 以中文原文为 key 的 en 字典 + 响应式 `t()`（未命中 fallback 中文，避免裸 key）。`ShellUiState` 启动时立即写入全局语言、关注循环首轮 force 同步——否则 locale=en 时托盘菜单要等设置变化才重建。
 - **已知限制**：Win10 上深色标题栏**聚焦时纯黑、失焦时深灰**是系统行为；`DWMWA_CAPTION_COLOR`(35)/`DWMWA_TEXT_COLOR`(36) 仅 Win11 可用。要做到恒为 dsh 的深灰（#1B1B1C），需要无边框窗口 + `initialization_script` 注入自绘标题栏——暂缓。
 
 ## 9. 前端与窗口管理
@@ -175,7 +177,7 @@ dsh WS /api/events.host ─▶ WsSource(host) ─▶ handle_host_frame ─▶ Se
 - 托盘"退出"：先 `stop()` dsh，等 1.5s 让监督循环杀完进程树，再 `exit(0)`。
 - 导航到远程 URL 后窗口标题被 dsh 的 `document.title` 覆盖——**外部脚本不要按标题找窗口**（按 PID + 类名，见 `scripts/shot-window.ps1`）。
 
-IPC 命令：commands.rs 7 个——`get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`（共 22 个，见下）。
+IPC 命令：commands.rs 8 个——`get_shell_ui_state` / `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`（共 23 个，见下）。
 
 壳设置（settings.rs）：
 
@@ -187,7 +189,7 @@ UI 缩放（zoom.rs）：
 
 - **快捷键**：默认 `Ctrl+Shift+=` 放大、`Ctrl+Shift+-` 缩小（可在设置窗口自定义），步进默认 ±2 个百分点（可配 1%–25%，clamp 到 25%–500%）。钩子脚本由 `hook_js(&ShellSettings)` 生成——快捷键定义内嵌为 JSON，匹配逻辑与 `Shortcut::matches` 对齐：`e.code` 物理键位为主，`e.key` 兜底（合成按键与 RDP 注入的 keydown `e.code` 为空，纯 code 匹配会整组失效），meta 永不命中。`on_page_load` 在每次整页加载完成后 eval 注入（**只注入 main 窗口**——设置窗口录制快捷键时不能被钩子抢先拦截；本地 splash 与远程 dsh UI 通用），capture 阶段拦截并 invoke `zoom_ui`（负载 `direction: "in"/"out"`），经 WebView2 原生 `SetZoomFactor` 生效——与浏览器 Ctrl++ 同一机制。监听器可热替换（`__dshZoomHookHandler` 存旧 handler，重注入先 `removeEventListener` 再挂新的，不叠加）。
 - **持久化**：每次变更即写 `%LOCALAPPDATA%\DSHDesktop\ui-zoom.txt`；缺失/损坏回退 100%；每次页面加载时 `on_page_load` 统一重应用当前缩放（兼作 WebView2 重建后的兜底）。
-- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 16 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
+- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 23 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
 
 ## 10. 平台抽象
 

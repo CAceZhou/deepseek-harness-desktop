@@ -7,12 +7,14 @@ use tokio::sync::watch;
 
 pub mod commands;
 pub mod diagnostics;
+pub mod i18n;
 pub mod mcp;
 pub mod notify;
 pub mod platform;
 pub mod port;
 pub mod process;
 pub mod progress;
+pub mod remote;
 pub mod runtime;
 pub mod settings;
 pub mod skills;
@@ -51,6 +53,7 @@ pub fn run() {
             None,
         ))
         .invoke_handler(tauri::generate_handler![
+            commands::get_shell_ui_state,
             commands::get_status,
             commands::restart_dsh,
             commands::get_recent_logs,
@@ -228,7 +231,7 @@ pub fn run() {
 
             let _ = handle.emit(
                 "dsh-progress",
-                ProgressPayload::new("runtime", "正在准备运行时…", Some(0)),
+                ProgressPayload::new("runtime", i18n::pick("正在准备运行时…", "Preparing runtime…"), Some(0)),
             );
 
             // 回退部署（只读安装目录）时按字节进度 emit；节流：百分比变化才发，
@@ -246,7 +249,10 @@ pub fn run() {
                         "dsh-progress",
                         ProgressPayload::new(
                             "runtime",
-                            "正在部署运行时（仅首次安装需要复制依赖）…",
+                            i18n::pick(
+                                "正在部署运行时（仅首次安装需要复制依赖）…",
+                                "Deploying runtime (only needed on first install)…",
+                            ),
                             Some(pct),
                         ),
                     );
@@ -261,7 +267,10 @@ pub fn run() {
                 Ok(p) => p,
                 Err(e) => {
                     // 不退出：记录错误供启动画面查询，窗口停在启动画面
-                    let msg = format!("运行时就绪失败：{e}");
+                    let msg = i18n::pick(
+                        format!("运行时就绪失败：{e}"),
+                        format!("Runtime setup failed: {e}"),
+                    );
                     handle.state::<diagnostics::BootstrapInfo>().set_error(msg.clone());
                     let _ = handle.emit(
                         "dsh-progress",
@@ -277,6 +286,8 @@ pub fn run() {
             // 否则 dsh 缺省渲染浅色而壳标题栏跟随系统（深色时不一致）。
             // 必须在 spawn_supervised 之前，dsh 首次启动即读到。
             theme::seed_theme_preference(&paths.home, platform.system_dark_mode());
+            // 本地页面的主题/语言快照：先落库再启动关注循环（循环首轮即广播解析值）
+            handle.manage(theme::ShellUiState::new(platform.as_ref(), &paths.home));
             theme::spawn_theme_follower(&handle, platform.clone(), paths.home.clone());
             let emit_handle = handle.clone();
             let nav_home = home_url.clone();
@@ -383,7 +394,7 @@ fn bridge_event(
                     "dsh-progress",
                     ProgressPayload::new(
                         "starting",
-                        "正在启动 dsh 服务…",
+                        i18n::pick("正在启动 dsh 服务…", "Starting dsh service…"),
                         Some(progress::starting_percent(deployed)),
                     ),
                 );
@@ -393,7 +404,7 @@ fn bridge_event(
                 let _ = handle.emit("dsh-ready", serde_json::json!({ "port": port }));
                 let _ = handle.emit(
                     "dsh-progress",
-                    ProgressPayload::new("ready", "正在打开界面…", Some(100)),
+                    ProgressPayload::new("ready", i18n::pick("正在打开界面…", "Opening interface…"), Some(100)),
                 );
                 if let Some(w) = handle.get_webview_window("main") {
                     if let Ok(url) = Url::parse(&format!("http://127.0.0.1:{port}/")) {
@@ -407,13 +418,17 @@ fn bridge_event(
                 }
                 let _ = handle.emit(
                     "dsh-progress",
-                    ProgressPayload::new("error", format!("启动失败：{msg}"), None),
+                    ProgressPayload::new(
+                        "error",
+                        i18n::pick(format!("启动失败：{msg}"), format!("Failed to start: {msg}")),
+                        None,
+                    ),
                 );
             }
             DshState::Stopped => {
                 let _ = handle.emit(
                     "dsh-progress",
-                    ProgressPayload::new("stopped", "dsh 服务已停止", None),
+                    ProgressPayload::new("stopped", i18n::pick("dsh 服务已停止", "dsh service stopped"), None),
                 );
             }
         },

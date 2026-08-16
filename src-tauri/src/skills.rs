@@ -115,7 +115,7 @@ fn list_skills_root(home: &Path) -> Vec<SkillRow> {
 
 fn set_enabled(home: &Path, name: &str, enabled: bool) -> Result<(), String> {
     if !valid_name(name) {
-        return Err(format!("非法技能名: {name}"));
+        return Err(crate::i18n::pick(format!("非法技能名: {name}"), format!("Invalid skill name: {name}")));
     }
     let (from, to) = if enabled {
         (home.join(DISABLED_DIR).join(name), home.join("skills").join(name))
@@ -123,10 +123,13 @@ fn set_enabled(home: &Path, name: &str, enabled: bool) -> Result<(), String> {
         (home.join("skills").join(name), home.join(DISABLED_DIR).join(name))
     };
     if !from.is_dir() {
-        return Err(format!("技能不存在: {name}"));
+        return Err(crate::i18n::pick(format!("技能不存在: {name}"), format!("Skill not found: {name}")));
     }
     if to.exists() {
-        return Err(format!("另一侧已存在同名技能: {name}"));
+        return Err(crate::i18n::pick(
+            format!("另一侧已存在同名技能: {name}"),
+            format!("A skill with the same name already exists on the other side: {name}"),
+        ));
     }
     fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;
     fs::rename(&from, &to).map_err(|e| e.to_string())
@@ -134,14 +137,14 @@ fn set_enabled(home: &Path, name: &str, enabled: bool) -> Result<(), String> {
 
 fn delete_skill_dir(home: &Path, name: &str) -> Result<(), String> {
     if !valid_name(name) {
-        return Err(format!("非法技能名: {name}"));
+        return Err(crate::i18n::pick(format!("非法技能名: {name}"), format!("Invalid skill name: {name}")));
     }
     for dir in [home.join("skills").join(name), home.join(DISABLED_DIR).join(name)] {
         if dir.is_dir() {
             return fs::remove_dir_all(&dir).map_err(|e| e.to_string());
         }
     }
-    Err(format!("技能不存在: {name}"))
+    Err(crate::i18n::pick(format!("技能不存在: {name}"), format!("Skill not found: {name}")))
 }
 
 /// 四个导入源（用户级目录；不存在时在弹窗里灰显）
@@ -234,11 +237,11 @@ fn import_one(source_dir: &Path, home: &Path, item: &ImportItem) -> ImportResult
     let name = item.name.clone();
     let err = |e: &str| ImportResult { name: name.clone(), status: "error".into(), error: Some(e.to_string()) };
     if !valid_name(&item.name) {
-        return err("非法技能名");
+        return err(&crate::i18n::pick("非法技能名", "Invalid skill name"));
     }
     let src = source_dir.join(&item.name);
     if !src.join("SKILL.md").is_file() {
-        return err("源目录中不存在该技能");
+        return err(&crate::i18n::pick("源目录中不存在该技能", "Skill not found in the source directory"));
     }
     let target_root = home.join("skills");
     let conflict =
@@ -282,7 +285,7 @@ pub fn import_skills(
             .map(|i| ImportResult {
                 name: i.name.clone(),
                 status: "error".into(),
-                error: Some("未知导入源".into()),
+                error: Some(crate::i18n::pick("未知导入源", "Unknown import source")),
             })
             .collect();
     };
