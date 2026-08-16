@@ -1,6 +1,6 @@
 # DSHDesktop
 
-[English](README.md) | Chinese
+[英文](README.md) | 中文
 
 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh，DeepSeek 的 agent harness CLI）的 Windows 桌面壳应用。安装包内嵌便携版 Node.js 运行时与 `@deepseek-ai/dsh`，dsh 官方 Web UI 像普通 Windows 应用一样运行，无需任何前置依赖。
 
