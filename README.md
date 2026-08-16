@@ -1,6 +1,6 @@
 # DSHDesktop
 
-**[中文说明](README.zh-CN.md)**
+English | [Chinese](README.zh-CN.md)
 
 A desktop shell for [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh), DeepSeek's agent harness CLI. The installer bundles a portable Node.js runtime and the `@deepseek-ai/dsh` package, so the official dsh Web UI runs as a regular Windows application with no prerequisites.
 
@@ -89,4 +89,4 @@ Windows x64 only for now. All platform differences are isolated behind `src-taur
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Upstream dsh is also MIT (Copyright 2026 DeepSeek).
