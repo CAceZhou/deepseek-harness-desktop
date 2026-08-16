@@ -7,7 +7,6 @@
 
   let status = $state<Status | null>(null)
   let logs = $state<string[]>([])
-  let autostart = $state(false)
   let restarting = $state(false)
   let logEl: HTMLPreElement | undefined = $state()
 
@@ -36,21 +35,11 @@
     }, 1500)
   }
 
-  async function toggleAutostart(e: Event) {
-    const enabled = (e.target as HTMLInputElement).checked
-    try {
-      await invoke('set_autostart', { enabled })
-    } catch {
-      autostart = !enabled
-    }
-  }
-
   let unlistenLog: (() => void) | undefined
   let timer = 0
 
   onMount(async () => {
     await refresh()
-    autostart = await invoke<boolean>('get_autostart')
     logs = await invoke<string[]>('get_recent_logs')
     unlistenLog = await listen<string>('dsh-log', (e) => {
       logs = [...logs.slice(-499), e.payload]
@@ -89,10 +78,6 @@
     <button onclick={restart} disabled={restarting}>
       {restarting ? '重启中…' : '重启服务'}
     </button>
-    <label class="switch">
-      <input type="checkbox" bind:checked={autostart} onchange={toggleAutostart} />
-      开机自启
-    </label>
   </section>
 
   <h2>服务日志</h2>
@@ -177,14 +162,6 @@
   button:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-  .switch {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: #9aa3b2;
-    cursor: pointer;
   }
   .logs {
     flex: 1;

@@ -5,6 +5,8 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const MENU_OPEN: &str = "open";
 pub const MENU_DIAGNOSTICS: &str = "diagnostics";
+pub const MENU_SKILLS: &str = "skills";
+pub const MENU_MCP: &str = "mcp";
 pub const MENU_RESTART: &str = "restart";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_QUIT: &str = "quit";
@@ -12,13 +14,15 @@ pub const MENU_QUIT: &str = "quit";
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, MENU_OPEN, "打开主界面", true, None::<&str>)?;
     let diagnostics = MenuItem::with_id(app, MENU_DIAGNOSTICS, "诊断面板", true, None::<&str>)?;
+    let skills = MenuItem::with_id(app, MENU_SKILLS, "技能管理", true, None::<&str>)?;
+    let mcp = MenuItem::with_id(app, MENU_MCP, "MCP管理", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, MENU_RESTART, "重启服务", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, MENU_SETTINGS, "其它设置", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "退出", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&open, &diagnostics, &restart, &settings, &sep, &quit],
+        &[&open, &diagnostics, &skills, &mcp, &restart, &settings, &sep, &quit],
     )?;
 
     TrayIconBuilder::with_id("main-tray")
@@ -29,6 +33,8 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             MENU_OPEN => show_main(app),
             MENU_DIAGNOSTICS => open_diagnostics(app),
+            MENU_SKILLS => open_skills(app),
+            MENU_MCP => open_mcp(app),
             MENU_SETTINGS => open_settings(app),
             MENU_RESTART => {
                 if let Some(state) = app.try_state::<SharedState>() {
@@ -59,9 +65,11 @@ fn open_diagnostics(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
+    // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
     let _ = WebviewWindowBuilder::new(app, "diagnostics", WebviewUrl::App("index.html#/diagnostics".into()))
         .title("DSHDesktop 诊断面板")
         .inner_size(900.0, 640.0)
+        .visible(false)
         .build();
 }
 
@@ -71,9 +79,39 @@ fn open_settings(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
+    // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html#/settings".into()))
         .title("DSHDesktop 设置")
-        .inner_size(640.0, 520.0)
+        .inner_size(760.0, 700.0)
+        .visible(false)
+        .build();
+}
+
+fn open_skills(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("skills") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let _ = WebviewWindowBuilder::new(app, "skills", WebviewUrl::App("index.html#/skills".into()))
+        .title("DSHDesktop 技能管理")
+        .inner_size(860.0, 640.0)
+        .visible(false)
+        .build();
+}
+
+fn open_mcp(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("mcp") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let _ = WebviewWindowBuilder::new(app, "mcp", WebviewUrl::App("index.html#/mcp".into()))
+        .title("DSHDesktop MCP 管理")
+        .inner_size(900.0, 680.0)
+        .visible(false)
         .build();
 }
 

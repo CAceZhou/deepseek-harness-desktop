@@ -8,3 +8,8 @@ body,
   color: #e6e8ee;
   font-family: 'Segoe UI', system-ui, sans-serif;
 }
+
+/* 本地页面恒为深色：声明后 WebView2 的滚动条/表单控件才按深色 UA 样式渲染 */
+html {
+  color-scheme: dark;
+}

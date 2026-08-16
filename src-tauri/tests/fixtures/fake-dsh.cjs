@@ -34,7 +34,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`listening http://127.0.0.1:${port}`)
 })
 
-// WebSocket 下行流：与真实 dsh 一致，/api/events.mux 通过 WS 推送
+// WebSocket 下行流：与真实 dsh 一致，/api/events.mux 与 /api/events.host 通过 WS 推送
 // {"type":"server-request","method":<事件类型>,"payload":{...}} 帧。
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 server.on('upgrade', (req, socket) => {
@@ -52,23 +52,55 @@ server.on('upgrade', (req, socket) => {
       'Connection: Upgrade\r\n' +
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
   )
-  const send = (method) => {
-    const payload = Buffer.from(
-      JSON.stringify({ type: 'server-request', rpcId: 'x', method, payload: {} }),
-    )
+  const send = (frame) => {
+    const payload = Buffer.from(JSON.stringify({ type: 'server-request', rpcId: 'x', ...frame }))
     const len = payload.length
     const header = len < 126
       ? Buffer.from([0x81, len])
       : Buffer.from([0x81, 126, (len >> 8) & 0xff, len & 0xff])
     socket.write(Buffer.concat([header, payload]))
   }
-  const heartbeat = setInterval(() => send('heartbeat'), 2000)
-  // 每 3s 发一个待批准事件，供通知桥接验收
-  const approval = setInterval(() => send('approval/requested'), 3000)
-  socket.on('close', () => {
-    clearInterval(heartbeat)
-    clearInterval(approval)
+  const sessionEvent = (sessionId, event) => ({
+    method: 'session/event',
+    payload: { type: 'session/event', sessionId, event },
   })
+  const turnEnd = (seq, kind) => ({
+    type: 'turn/end',
+    seq,
+    time: 0,
+    data: { turn: 1, reason: { kind } },
+  })
+  const title = (seq, text) => ({ type: 'session/title', seq, time: 0, data: { title: text } })
+
+  const timers = []
+  if (req.url === '/api/events.mux') {
+    timers.push(setInterval(() => send({ method: 'heartbeat', payload: {} }), 2000))
+    // 每 3s 发一个待批准事件，供通知桥接验收
+    timers.push(setInterval(() => send({ method: 'approval/requested', payload: {} }), 3000))
+    // 每 2s 一轮回合事件（首轮延迟 1s，让 host 流的子代理标记先到位）：
+    // 主会话完成 + 主会话中止 + 子代理完成——只有主会话完成应触发通知
+    const cycle = () => {
+      send(sessionEvent('fx-main', title(1, 'fx 主会话')))
+      send(sessionEvent('fx-main', turnEnd(2, 'completed')))
+      send(sessionEvent('fx-main', turnEnd(3, 'aborted')))
+      send(sessionEvent('fx-sub', title(1, 'fx 子代理')))
+      send(sessionEvent('fx-sub', turnEnd(2, 'completed')))
+    }
+    timers.push(setTimeout(() => {
+      cycle()
+      timers.push(setInterval(cycle, 2000))
+    }, 1000))
+  } else {
+    // host：连接即推 + 每 2s 重推子代理标记（fx-sub 是子代理会话）
+    const added = () =>
+      send({
+        method: 'host/session-added',
+        payload: { type: 'host/session-added', sessionId: 'fx-sub', blank: false, origin: 'subagent' },
+      })
+    added()
+    timers.push(setInterval(added, 2000))
+  }
+  socket.on('close', () => timers.forEach((t) => clearInterval(t)))
   socket.on('error', () => {})
 })
 

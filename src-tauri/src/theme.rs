@@ -56,10 +56,9 @@ fn apply(app: &AppHandle, theme: Theme) {
     apply_windows(app, theme);
     #[cfg(not(windows))]
     {
-        for label in ["main", "diagnostics", "settings"] {
-            if let Some(w) = app.get_webview_window(label) {
-                let _ = w.set_theme(Some(theme));
-            }
+        // 遍历所有窗口而非写死 label——新增本地窗口（如 skills）自动跟随
+        for w in app.webview_windows().values() {
+            let _ = w.set_theme(Some(theme));
         }
     }
 }
@@ -75,28 +74,27 @@ fn apply_windows(app: &AppHandle, theme: Theme) {
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY: u32 = 19; // Win10 20H1 之前
     let value: i32 = matches!(theme, Theme::Dark) as i32;
-    for label in ["main", "diagnostics", "settings"] {
-        if let Some(w) = app.get_webview_window(label) {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = w.set_theme(Some(theme));
-            }));
-            if let Ok(hwnd) = w.hwnd() {
-                let hwnd = hwnd.0 as _;
-                unsafe {
-                    let hr = DwmSetWindowAttribute(
+    // 遍历所有窗口而非写死 label——新增本地窗口（如 skills）自动跟随
+    for w in app.webview_windows().values() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = w.set_theme(Some(theme));
+        }));
+        if let Ok(hwnd) = w.hwnd() {
+            let hwnd = hwnd.0 as _;
+            unsafe {
+                let hr = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    &value as *const i32 as *const _,
+                    std::mem::size_of::<i32>() as u32,
+                );
+                if hr != 0 {
+                    DwmSetWindowAttribute(
                         hwnd,
-                        DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY,
                         &value as *const i32 as *const _,
                         std::mem::size_of::<i32>() as u32,
                     );
-                    if hr != 0 {
-                        DwmSetWindowAttribute(
-                            hwnd,
-                            DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY,
-                            &value as *const i32 as *const _,
-                            std::mem::size_of::<i32>() as u32,
-                        );
-                    }
                 }
             }
         }

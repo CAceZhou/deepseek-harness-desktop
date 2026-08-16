@@ -3,11 +3,14 @@
   import { onMount } from 'svelte'
 
   type Shortcut = { ctrl: boolean; shift: boolean; alt: boolean; code: string; key: string }
+  type CompletionSound = 'silent' | 'default' | 'im' | 'mail' | 'reminder' | 'sms'
   type ShellSettings = {
     zoom_step: number
     zoom_in: Shortcut
     zoom_out: Shortcut
     close_behavior: 'background' | 'quit'
+    notify_on_completion: boolean
+    completion_sound: CompletionSound
   }
 
   // 与 Rust 端 ShellSettings::default 保持一致
@@ -16,19 +19,37 @@
     zoom_in: { ctrl: true, shift: true, alt: false, code: 'Equal', key: '+' },
     zoom_out: { ctrl: true, shift: true, alt: false, code: 'Minus', key: '_' },
     close_behavior: 'background',
+    notify_on_completion: true,
+    completion_sound: 'default',
   }
+
+  const SOUND_OPTIONS: { value: CompletionSound; label: string }[] = [
+    { value: 'silent', label: '无提示音' },
+    { value: 'default', label: '系统默认' },
+    { value: 'im', label: '消息' },
+    { value: 'mail', label: '邮件' },
+    { value: 'reminder', label: '提醒' },
+    { value: 'sms', label: '短信' },
+  ]
 
   let zoomIn = $state<Shortcut>({ ...DEFAULTS.zoom_in })
   let zoomOut = $state<Shortcut>({ ...DEFAULTS.zoom_out })
   let stepPct = $state(2)
   let closeBehavior = $state<'background' | 'quit'>('background')
+  let notifyOnCompletion = $state(true)
+  let completionSound = $state<CompletionSound>('default')
+  let autostart = $state(false)
   let recording = $state<'in' | 'out' | null>(null)
   let saving = $state(false)
   let notice = $state<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
   onMount(async () => {
-    const s = await invoke<ShellSettings>('get_shell_settings')
+    const [s, auto] = await Promise.all([
+      invoke<ShellSettings>('get_shell_settings'),
+      invoke<boolean>('get_autostart'),
+    ])
     applyState(s)
+    autostart = auto
   })
 
   function applyState(s: ShellSettings) {
@@ -36,6 +57,8 @@
     zoomOut = { ...s.zoom_out }
     stepPct = Math.round(s.zoom_step * 100)
     closeBehavior = s.close_behavior
+    notifyOnCompletion = s.notify_on_completion
+    completionSound = s.completion_sound
   }
 
   const CODE_LABELS: Record<string, string> = {
@@ -104,8 +127,11 @@
         zoom_in: zoomIn,
         zoom_out: zoomOut,
         close_behavior: closeBehavior,
+        notify_on_completion: notifyOnCompletion,
+        completion_sound: completionSound,
       }
       await invoke('set_shell_settings', { next })
+      await invoke('set_autostart', { enabled: autostart })
       notice = { kind: 'ok', text: '已保存，立即生效' }
     } catch (e) {
       notice = { kind: 'err', text: String(e) }
@@ -116,7 +142,17 @@
 
   function resetDefaults() {
     applyState(structuredClone(DEFAULTS))
+    autostart = false
     notice = { kind: 'ok', text: '已恢复默认值，点击保存生效' }
+  }
+
+  // 试听：toast 的音效是它的属性，只能连同通知一起听
+  async function previewSound() {
+    try {
+      await invoke('preview_completion_sound', { sound: completionSound })
+    } catch (e) {
+      notice = { kind: 'err', text: String(e) }
+    }
   }
 </script>
 
@@ -126,10 +162,53 @@
   </header>
 
   <section class="card">
+    <h2>通用</h2>
+    <label class="check">
+      <input type="checkbox" bind:checked={autostart} />
+      开机时自动启动
+    </label>
+    <div class="divider"></div>
+    <span class="group-label">关闭主窗口时</span>
+    <label class="check">
+      <input type="radio" bind:group={closeBehavior} value="background" />
+      保持后台运行（最小化到托盘）
+    </label>
+    <label class="check">
+      <input type="radio" bind:group={closeBehavior} value="quit" />
+      退出程序
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>任务完成通知</h2>
+    <label class="check">
+      <input type="checkbox" bind:checked={notifyOnCompletion} />
+      主窗口隐藏时，dsh 回答完成弹 Windows 通知
+    </label>
+    <div class="row">
+      <span>完成提示音</span>
+      <span class="control">
+        <select bind:value={completionSound} disabled={!notifyOnCompletion}>
+          {#each SOUND_OPTIONS as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+        <button
+          class="ghost small"
+          onclick={previewSound}
+          disabled={!notifyOnCompletion || completionSound === 'silent'}
+        >
+          试听
+        </button>
+      </span>
+    </div>
+  </section>
+
+  <section class="card">
     <h2>界面缩放</h2>
     <div class="row">
       <span>每次放大/缩小比例</span>
-      <span class="step-input">
+      <span class="control">
         <input type="number" min="1" max="25" bind:value={stepPct} /> %
       </span>
     </div>
@@ -147,25 +226,12 @@
     </div>
   </section>
 
-  <section class="card">
-    <h2>关闭主窗口时</h2>
-    <label class="radio">
-      <input type="radio" bind:group={closeBehavior} value="background" />
-      保持后台运行（最小化到托盘）
-    </label>
-    <label class="radio">
-      <input type="radio" bind:group={closeBehavior} value="quit" />
-      退出程序
-    </label>
-  </section>
-
-  {#if notice}
-    <p class="notice" class:err={notice.kind === 'err'}>{notice.text}</p>
-  {/if}
-
   <section class="actions">
     <button class="primary" onclick={save} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
     <button class="ghost" onclick={resetDefaults}>恢复默认</button>
+    {#if notice}
+      <p class="notice" class:err={notice.kind === 'err'}>{notice.text}</p>
+    {/if}
   </section>
 </main>
 
@@ -176,7 +242,7 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
     overflow-y: auto;
   }
   header {
@@ -189,7 +255,8 @@
     margin: 0;
   }
   h2 {
-    font-size: 13px;
+    font-size: 12px;
+    letter-spacing: 0.08em;
     color: #9aa3b2;
     margin: 0;
     font-weight: 600;
@@ -198,7 +265,7 @@
     background: #171b26;
     border: 1px solid #232838;
     border-radius: 10px;
-    padding: 12px 16px;
+    padding: 16px 18px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -207,10 +274,11 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    min-height: 36px;
     font-size: 13px;
     color: #9aa3b2;
   }
-  .step-input {
+  .control {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -218,6 +286,8 @@
   }
   input[type='number'] {
     width: 64px;
+    height: 32px;
+    box-sizing: border-box;
     background: #0a0c10;
     border: 1px solid #232838;
     border-radius: 6px;
@@ -225,8 +295,29 @@
     padding: 6px 8px;
     font-size: 13px;
   }
+  select {
+    height: 32px;
+    box-sizing: border-box;
+    background: #0a0c10;
+    border: 1px solid #232838;
+    border-radius: 6px;
+    color: #e6e8ee;
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  select:disabled {
+    opacity: 0.5;
+  }
+  .ghost.small {
+    height: 32px;
+    box-sizing: border-box;
+    padding: 0 12px;
+    font-size: 12px;
+  }
   .recorder {
     min-width: 170px;
+    height: 32px;
+    box-sizing: border-box;
     text-align: center;
     background: #0a0c10;
     border: 1px solid #232838;
@@ -240,13 +331,21 @@
     border-color: #1565c0;
     color: #64a3e8;
   }
-  .radio {
+  .check {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 13px;
     color: #9aa3b2;
     cursor: pointer;
+  }
+  .divider {
+    height: 1px;
+    background: #232838;
+  }
+  .group-label {
+    font-size: 13px;
+    color: #9aa3b2;
   }
   .notice {
     margin: 0;
@@ -258,7 +357,10 @@
   }
   .actions {
     display: flex;
+    align-items: center;
     gap: 12px;
+    border-top: 1px solid #232838;
+    padding-top: 16px;
   }
   .actions button {
     border: none;

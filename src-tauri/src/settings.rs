@@ -38,6 +38,35 @@ pub enum CloseBehavior {
     Quit,
 }
 
+/// 任务完成通知的提示音。直接透传 toast 的音频预设
+/// （tauri-winrt-notification Sound::from_str → ms-winsoundevent:Notification.*，
+/// Windows 系统内置，不依赖用户声音方案）；Silent = 不传 sound，toast 静音。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionSound {
+    Silent,
+    #[default]
+    Default,
+    Im,
+    Mail,
+    Reminder,
+    Sms,
+}
+
+impl CompletionSound {
+    /// tauri-plugin-notification builder.sound() 的取值；None 表示静音 toast
+    pub fn toast_sound_name(self) -> Option<&'static str> {
+        match self {
+            CompletionSound::Silent => None,
+            CompletionSound::Default => Some("Default"),
+            CompletionSound::Im => Some("IM"),
+            CompletionSound::Mail => Some("Mail"),
+            CompletionSound::Reminder => Some("Reminder"),
+            CompletionSound::Sms => Some("SMS"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellSettings {
@@ -45,6 +74,8 @@ pub struct ShellSettings {
     pub zoom_in: Shortcut,
     pub zoom_out: Shortcut,
     pub close_behavior: CloseBehavior,
+    pub notify_on_completion: bool,
+    pub completion_sound: CompletionSound,
 }
 
 impl Default for ShellSettings {
@@ -66,6 +97,8 @@ impl Default for ShellSettings {
                 key: "_".into(),
             },
             close_behavior: CloseBehavior::Background,
+            notify_on_completion: true,
+            completion_sound: CompletionSound::Default,
         }
     }
 }
@@ -160,6 +193,25 @@ pub fn set_shell_settings(
     Ok(())
 }
 
+/// 试听任务完成提示音：弹一条带所选音效的 toast（音效是 toast 的属性，
+/// 只能连同通知一起试听）；Silent 时弹静音 toast。
+#[tauri::command]
+pub fn preview_completion_sound(
+    app: tauri::AppHandle,
+    sound: CompletionSound,
+) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let mut builder = app
+        .notification()
+        .builder()
+        .title("DSHDesktop")
+        .body("任务完成提示音试听");
+    if let Some(name) = sound.toast_sound_name() {
+        builder = builder.sound(name);
+    }
+    builder.show().map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +297,60 @@ mod tests {
         bad.zoom_in = Shortcut { ctrl: false, shift: false, alt: false, code: "KeyZ".into(), key: "z".into() };
         assert!(st.set(bad).is_err());
         assert!(st.get().zoom_in.ctrl);
+    }
+
+    #[test]
+    fn completion_notify_defaults_on_and_sound_default() {
+        let s = ShellSettings::default();
+        assert!(s.notify_on_completion);
+        assert_eq!(s.completion_sound, CompletionSound::Default);
+    }
+
+    #[test]
+    fn old_settings_file_without_notify_fields_loads_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        // 旧版配置文件：没有 notify_on_completion / completion_sound
+        std::fs::write(dir.path().join("settings.json"), r#"{ "zoom_step": 0.05 }"#).unwrap();
+        let s = ShellSettings::load(dir.path());
+        assert!(s.notify_on_completion);
+        assert_eq!(s.completion_sound, CompletionSound::Default);
+    }
+
+    #[test]
+    fn completion_sound_roundtrip_and_serde_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = ShellSettings::default();
+        s.notify_on_completion = false;
+        s.completion_sound = CompletionSound::Sms;
+        s.save(dir.path());
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(text.contains(r#""completion_sound": "sms""#), "实际文件：{text}");
+        let s2 = ShellSettings::load(dir.path());
+        assert!(!s2.notify_on_completion);
+        assert_eq!(s2.completion_sound, CompletionSound::Sms);
+    }
+
+    #[test]
+    fn invalid_sound_falls_back_to_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "completion_sound": "loud-noise" }"#,
+        )
+        .unwrap();
+        let s = ShellSettings::load(dir.path());
+        assert_eq!(s.completion_sound, CompletionSound::Default);
+        assert!(s.notify_on_completion);
+    }
+
+    #[test]
+    fn toast_sound_name_mapping() {
+        assert_eq!(CompletionSound::Silent.toast_sound_name(), None);
+        assert_eq!(CompletionSound::Default.toast_sound_name(), Some("Default"));
+        assert_eq!(CompletionSound::Im.toast_sound_name(), Some("IM"));
+        assert_eq!(CompletionSound::Mail.toast_sound_name(), Some("Mail"));
+        assert_eq!(CompletionSound::Reminder.toast_sound_name(), Some("Reminder"));
+        assert_eq!(CompletionSound::Sms.toast_sound_name(), Some("SMS"));
     }
 
     #[test]

@@ -22,7 +22,7 @@ dsh 本身提供 `dsh web` 命令：在本机 127.0.0.1 上启动一个 Web UI �
 | 壳内嵌官方 Web UI，不自绘界面 | dsh 处于开发者预览期，UI 迭代快；壳跟随 npm 包版本即可 | 主窗口内容依赖 dsh 进程健康；需要进程监督 |
 | 内嵌 Node + dsh 随安装包分发 | 零前置依赖，装完即用 | 安装包 45MB、安装后约 242MB |
 | 运行时**原地运行**（安装目录可写时） | 省掉约 230MB 部署副本；NSIS 默认按用户安装即可写 | 需处理只读安装目录回退与旧副本清理 |
-| 事件通知走 WebSocket `/api/events.mux` | dsh 官方事件下行通道 | 上游接口不稳定，需适配层隔离 |
+| 事件通知走 WebSocket `/api/events.mux` + `/api/events.host` | dsh 官方事件下行通道 | 上游接口不稳定，需适配层隔离 |
 | 主题用 2s 轮询 settings.yaml | 文件极小、改动极少；比 inotify 简单且跨平台无差异 | 主题切换最多 2s 延迟 |
 | 平台差异全部收口 `Platform` trait | 为 macOS/Linux 预留；`compile_error!` 强制新平台显式实现 | trait 方法需精心设计（见 §10） |
 
@@ -39,12 +39,12 @@ dsh 本身提供 `dsh web` 命令：在本机 127.0.0.1 上启动一个 Web UI �
 │  lib.rs      组装：插件 → setup → 事件桥（dsh 状态 → 前端事件/窗口导航）   │
 │  runtime.rs  运行时定位：原地运行 / 只读回退部署 / 旧副本清理               │
 │  process.rs  DshProcess 监督循环：spawn、就绪探测、指数退避重启             │
-│  notify/     WS 订阅 dsh 事件 → 过滤 → 原生通知（窗口隐藏时）              │
+│  notify/     WS 订阅 dsh 事件(mux+host 双下行) → 分类/台账 → 原生通知      │
 │  theme.rs    轮询 dsh 主题设置 → DWM 标题栏着色                            │
 │  progress.rs 首启进度模型：阶段权重、百分比映射、结构化事件负载             │
-│  tray.rs     托盘菜单；diagnostics.rs 状态/日志；commands.rs 7 个命令      │
+│  tray.rs     托盘菜单；diagnostics.rs 状态/日志；commands.rs 基础命令     │
 │  zoom.rs     UI 缩放：可配置步进（默认 2%）、快捷键钩子注入、持久化        │
-│  settings.rs 壳设置：settings.json 模型/校验/持久化 + get/set 命令         │
+│  settings.rs 壳设置：settings.json 模型/校验/持久化 + get/set/试听命令      │
 │  platform/   Platform trait（windows.rs 实现；macos/linux 为编译期占位）   │
 └──────────────────────────────────┬───────────────────────────────────────┘
                                    │ spawn（CREATE_NO_WINDOW，DSH_HOME 隔离）
@@ -68,7 +68,7 @@ DSHDesktop\
 
 ## 4. 启动时序
 
-1. **插件初始化**：`single_instance` 必须最先注册——第二次启动时聚焦已有主窗口，不重复拉起。`window-state` 记忆窗口几何：缩放/移动实时入内存缓存，退出（`RunEvent::Exit`）时落盘 `%APPDATA%/<identifier>/.window-state.json`，下次启动建窗时恢复；flags 只取 `SIZE | POSITION | MAXIMIZED`——不含 `VISIBLE`，否则托盘隐藏态下退出会把"隐藏"记住，下次启动主窗口不出来。
+1. **插件初始化**：`single_instance` 必须最先注册——第二次启动时聚焦已有主窗口，不重复拉起。`window-state` 记忆窗口几何：缩放/移动实时入内存缓存，退出（`RunEvent::Exit`）时落盘 `%APPDATA%/<identifier>/.window-state.json`，下次启动建窗时恢复；flags 只取 `SIZE | POSITION | MAXIMIZED`——不含 `VISIBLE`，否则托盘隐藏态下退出会把"隐藏"记住，下次启动主窗口不出来。注意 restore 在插件 `window_created`（建窗后经 `run_on_main_thread` 排队）里执行，**晚于首批可见帧**（实测默认尺寸会可见 ~370ms）——所以主窗口在 tauri.conf 里 `visible:false` 创建，`on_page_load(Finished)` 时再 `show()`（此刻 restore 早已完成，首个可见帧即记忆几何）；回归见 `scripts/verify-no-size-flash.ps1`。
 2. **setup**：建托盘 → 注册 `BootstrapInfo`（启动错误兜底）→ 取 `resource_dir` 定位内嵌运行时。
 3. **首启判定**：`dsh-home` 在 ensure_runtime 之前不存在即首启（前端据此决定显示进度条还是纯文字）。
 4. **ensure_runtime**（§5）：失败不退出，错误写入 `BootstrapInfo` 并 emit `dsh-progress`（stage=error），窗口停在启动画面显示错误（前端会主动 `get_bootstrap_error` 查询，因为错误事件可能早于前端 listen 注册而丢失）。
@@ -80,7 +80,7 @@ DSHDesktop\
    - `ready` → 100% → 写入 port 的 watch 通道（通知 WS 订阅器换端口）→ emit `dsh-ready` → **主窗口 navigate 到 `http://127.0.0.1:<port>/`**
    - `error` → 主窗口 navigate 回本地启动画面
    - 每个事件同时追加到 `events.log`。
-8. dsh 就绪后，WS 订阅器连上 `/api/events.mux`，进入稳态。
+8. dsh 就绪后，WS 订阅器连上 `/api/events.mux` 与 `/api/events.host`，进入稳态。
 
 ## 5. 运行时管理
 
@@ -125,16 +125,25 @@ Failed（不再自动重启，前端/托盘可手动 restart）
 ## 7. 事件通知
 
 ```
-dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summarize ──▶ NotifySink
-（断线 5s 重连；端口经        （regex 匹配 method）  （提取可读摘要）  （主窗口隐藏时
- watch 通道跟随重启换端口）                                              才弹原生通知）
+dsh WS /api/events.mux ──▶ WsSource(mux) ──▶ handle_mux_frame ──┐
+dsh WS /api/events.host ─▶ WsSource(host) ─▶ handle_host_frame ─▶ SessionBook
+（两端点共用 WsSource：断线 5s 重连、端口经 watch 跟随重启换端口；   │（子代理集合
+ host 重连先 clear_subagents——基线不可知，fail-open）              │ + 会话标题）
+                                                                ▼
+                                              NotifySink：主窗口隐藏时读壳设置 → toast
 ```
 
-- dsh 的事件帧：`{"type":"server-request","method":"approval/requested","payload":{...}}`。GET 该端点返回 426（仅 WS）。
-- 只放行需要用户关注的两类：`approval/requested`（待批准）、`question/requested`（待回答）。
+- dsh 的事件帧：`{"type":"server-request","method":<payload.type>,"payload":{...}}`，mux/host 两端点同构（仅 WS；GET 返回 426）。
+- mux 流三类放行：
+  - `approval/requested` / `question/requested`（待批准/待回答，regex 粗筛）→ **Attention** 通知，维持静音 toast。
+  - `session/event` 且 `event.type=="turn/end"` 且 `data.reason.kind=="completed"` → **TurnCompleted** 通知（可带提示音）；aborted/error/blocked/max-tokens 一律忽略。
+  - `session/event` 且 `event.type=="session/title"` → 记入 SessionBook，完成通知正文带「会话标题」（无标题回退"dsh 回答完成"）。
+- **两段式过滤**：先字符串 contains 粗筛、命中才 JSON 解析——流式期间每个 token chunk 都是一帧 `session/event`，不能逢帧解析。
+- **子代理过滤**：mux 帧不含 origin；host 流的 `host/session-added`（`origin=="subagent"`）/ `host/session-removed` 维护子代理集合，命中的 turn/end 直接丢弃。子代理必然创建于 WS 连接之后（先创建再跑回合），时序天然安全；host 流不推基线，重连后集合清空（宁多弹一条，不漏弹）。
 - dsh 的浏览器信任栅栏允许 loopback + 无 Origin 的请求，Rust 客户端天然满足。
 - **适配层是有意为之**：`NotifySource` trait 隔离上游不稳定的接口，将来可加 `FileWatchSource`（解析 session jsonl）等替代实现。
-- sink 只在主窗口隐藏（托盘态）时弹通知，避免打扰正在操作的用户。
+- sink 只在主窗口隐藏（托盘态）时弹通知，避免打扰正在操作的用户；弹前写一行 `Notify: {kind} {body}` 到 events.log（通知链路的现场诊断抓手）。
+- **完成通知设置**（settings.json）：`notify_on_completion`（默认开）+ `completion_sound`（silent/default/im/mail/reminder/sms，默认 default）。音效透传 toast 音频预设（`ms-winsoundevent:Notification.*`，系统内置、不受用户声音方案影响；不传 sound 则 toast 静音——Attention 类即如此）。试听走 `preview_completion_sound` 命令，弹一条带所选音效的 toast（音效是 toast 的属性，只能连通知一起听）。
 
 ## 8. 主题跟随
 
@@ -151,24 +160,26 @@ dsh WS /api/events.mux ──▶ WsSource ──▶ EventFilter ──▶ summar
 
 ## 9. 前端与窗口管理
 
-壳的本地页面只有三个，用 **hash 路由**（`App.svelte` 监听 `hashchange`）：
+壳的本地页面只有四个，用 **hash 路由**（`App.svelte` 监听 `hashchange`）：
 
 - `#/`（默认）**Splash.svelte**：启动画面。onMount 先 `invoke('get_bootstrap_error')` 主动查引导错误、`invoke('is_first_launch')` 查首启标记，再 listen 结构化的 `dsh-progress`。**首启时**显示分阶段进度条（百分比数字 + 阶段清单 ✓/●/○）与"首次启动需要部署运行时，可能要花几分钟"提示（仅此分支渲染，后续启动不出现）：runtime/starting 阶段百分比由后端给下限，`starting` 期间前端向 95% 渐近缓动（dsh 无细分进度信号，缓动只是呈现层，永不触顶），`ready` 到 100%。**非首启**维持纯文字 + 不确定滚动条。dsh 就绪后由 **Rust 侧**把主窗口 navigate 到 dsh UI——前端不自己跳。
 - `#/diagnostics` **Diagnostics.svelte**：诊断面板（状态/端口/PID/版本、500 行实时日志回填 + `dsh-log` 事件流、重启按钮、开机自启开关）。
-- `#/settings` **Settings.svelte**：其它设置（缩放步进 1%–25%、放大/缩小快捷键录制器、关窗行为单选）。保存时前端先校验（至少一个修饰键、in/out 不冲突），再 `invoke('set_shell_settings', { next })` 由 Rust 端复验并落盘。
+- `#/settings` **Settings.svelte**：其它设置（开机自启、关窗行为单选、任务完成通知开关+提示音、缩放步进 1%–25%、放大/缩小快捷键录制器）。保存时前端先校验（至少一个修饰键、in/out 不冲突），再 `invoke('set_shell_settings', { next })` 由 Rust 端复验并落盘。
+- `#/skills` **Skills.svelte**：技能管理。数据源是**壳注入给 dsh 的 DSH_HOME**（`<runtime_base>/dsh-home`，不是 `~/.dsh`）：`skills/` 为启用、旁路 `skills-disabled/` 为停用（dsh 的技能发现只认根目录直属条目、无原生禁用概念；移出根目录即停用，watcher 观察到变化后热刷新 catalog，无需重启）。导入从三个外部 agent 的用户级源复制目录：Codex `~/.codex/skills`、Claude Code `~/.claude/skills`、OpenCode `~/.config/opencode/skills`；同名冲突逐个选覆盖/跳过（覆盖会同时清掉禁用目录里的旧副本）。**独立 dsh 的默认目录 `~/.dsh/skills` 不作为导入源**——壳就是 dsh，启动时自动扫描它并补入新技能（`skills::seed_from_default_dsh_home`；`.skills-seeded` marker 记录已见名字，壳里删掉的不会复活）。删除只删 home 内副本，不动源目录。Rust 侧 `skills.rs` 的 frontmatter 解析只取 description 单行键，行上操作均以目录名为准。
+- `#/mcp` **Mcp.svelte**：MCP server 管理（列表/启停/删除/新增/编辑 + 导入）。dsh 没有独立的 mcp.json——MCP server 是 Cordis 插件补丁，壳读写 `<dsh-home>/profiles/web/cordis.patch.yml` 中 `name == '@deepseek-ai/dsh-mcp-client'` 的 insert 条目（只动这些条目，其余 Value 级保留；tmp+rename 原子写；读前剥 BOM）。dsh 的 HMR（`watchUserPatches` + chokidar）监听该文件，改后自动 disconnect+reconnect，**无需重启**。启停 = entry 上加/去 `disabled: true`（cordis-plugin-loader 原生语义，disabled 的 entry 不起 fiber）。编辑以旧 config 为底、只覆盖表单字段，`toolCallTimeoutMs`/`reconnect.*` 等高级键保留；transport 只有 `stdio`（command/args/env/cwd）与 `streamable-http`（url/headers）两种，sse 不支持。启动时种子同步 `~/.dsh` 两层 patch 里的 MCP 条目（`mcp::seed_from_default_dsh_home`，`.mcp-seeded` marker 防复活；源里 disabled 的不同步也不记 marker，日后在 ~/.dsh 启用时仍能进来）。手动导入三源：Claude Code `~/.claude.json` 的 `mcpServers`（stdio/http 映射，sse 标记"不支持"跳过）、Codex `~/.codex/config.toml` 的 `[mcp_servers.*]`（`enabled=false` 不列出）、OpenCode `~/.config/opencode/opencode.json` 的 `mcp` 段（local/remote 映射）；冲突逐个覆盖/跳过。patch 文件解析失败（如含无法处理的语法）时页面降级为只读并提示手工编辑。
 
 窗口行为：
 
 - 主窗口 `main`：**关窗行为可配置**（settings.json 的 `close_behavior`）：默认 `background` = 隐藏到托盘（`CloseRequested` 时 `prevent_close` + `hide`），`quit` = 走托盘"退出"同一流程直接退出程序；托盘"打开主界面"或二次启动（单实例插件）时 `show` + `unminimize` + `set_focus`。
-- 诊断窗口 `diagnostics`、设置窗口 `settings`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
+- 诊断窗口 `diagnostics`、设置窗口 `settings`、技能窗口 `skills`、MCP 窗口 `mcp`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
 - 托盘"退出"：先 `stop()` dsh，等 1.5s 让监督循环杀完进程树，再 `exit(0)`。
 - 导航到远程 URL 后窗口标题被 dsh 的 `document.title` 覆盖——**外部脚本不要按标题找窗口**（按 PID + 类名，见 `scripts/shot-window.ps1`）。
 
-IPC 命令：commands.rs 7 个——`get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui` 与 settings.rs 的 `get_shell_settings` / `set_shell_settings`（见下）。
+IPC 命令：commands.rs 7 个——`get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`（共 22 个，见下）。
 
 壳设置（settings.rs）：
 
-- **模型**：`settings.json` 存 `zoom_step`（0.01–0.25，越界 clamp）、`zoom_in`/`zoom_out` 快捷键（`{ctrl, shift, alt, code, key}`）、`close_behavior`（`background`/`quit`）。缺失/损坏 → 全默认；部分字段缺失 → 逐字段回退默认（serde default）；校验失败（无修饰键/in-out 冲突）→ 全默认，不带坏状态跑。
+- **模型**：`settings.json` 存 `zoom_step`（0.01–0.25，越界 clamp）、`zoom_in`/`zoom_out` 快捷键（`{ctrl, shift, alt, code, key}`）、`close_behavior`（`background`/`quit`）、`notify_on_completion`（默认 true）、`completion_sound`（`silent`/`default`/`im`/`mail`/`reminder`/`sms`，默认 `default`）。缺失/损坏 → 全默认；部分字段缺失 → 逐字段回退默认（serde default）；校验失败（无修饰键/in-out 冲突）→ 全默认，不带坏状态跑。
 - **SettingsState**：托管内存值 + 持久化目录；`set` 先 clamp/校验再落盘再替换内存，校验失败则内存磁盘都保持旧值。
 - **保存即生效**：`set_shell_settings` 成功后对主窗口重注入缩放钩子（快捷键定义内嵌在脚本里必须重注入）；步进不写死在脚本里，`zoom_ui` 调用时从设置读，改步进本来就无需重注入。
 
@@ -176,7 +187,7 @@ UI 缩放（zoom.rs）：
 
 - **快捷键**：默认 `Ctrl+Shift+=` 放大、`Ctrl+Shift+-` 缩小（可在设置窗口自定义），步进默认 ±2 个百分点（可配 1%–25%，clamp 到 25%–500%）。钩子脚本由 `hook_js(&ShellSettings)` 生成——快捷键定义内嵌为 JSON，匹配逻辑与 `Shortcut::matches` 对齐：`e.code` 物理键位为主，`e.key` 兜底（合成按键与 RDP 注入的 keydown `e.code` 为空，纯 code 匹配会整组失效），meta 永不命中。`on_page_load` 在每次整页加载完成后 eval 注入（**只注入 main 窗口**——设置窗口录制快捷键时不能被钩子抢先拦截；本地 splash 与远程 dsh UI 通用），capture 阶段拦截并 invoke `zoom_ui`（负载 `direction: "in"/"out"`），经 WebView2 原生 `SetZoomFactor` 生效——与浏览器 Ctrl++ 同一机制。监听器可热替换（`__dshZoomHookHandler` 存旧 handler，重注入先 `removeEventListener` 再挂新的，不叠加）。
 - **持久化**：每次变更即写 `%LOCALAPPDATA%\DSHDesktop\ui-zoom.txt`；缺失/损坏回退 100%；每次页面加载时 `on_page_load` 统一重应用当前缩放（兼作 WebView2 重建后的兜底）。
-- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 10 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
+- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 16 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
 
 ## 10. 平台抽象
 
@@ -232,9 +243,9 @@ scripts/fetch-runtime.ps1
 
 | 层 | 内容 | 命令 |
 | --- | --- | --- |
-| Rust 单元测试（39） | runtime 部署/回退/路径归一化/复制进度回调、progress 阶段权重与百分比映射、theme BOM 解析与首启播种、notify 过滤与摘要、LogRing 淘汰、port 分配与就绪探测、platform 基础、zoom clamp/持久化/钩子脚本内嵌设置、settings 模型/校验/持久化 | `cd src-tauri && cargo test` |
+| Rust 单元测试（88） | runtime 部署/回退/路径归一化/复制进度回调、progress 阶段权重与百分比映射、theme BOM 解析与首启播种、notify 帧分类/子代理台账/摘要、LogRing 淘汰、port 分配与就绪探测、platform 基础、zoom clamp/持久化/钩子脚本内嵌设置、settings 模型/校验/持久化/提示音枚举、skills frontmatter 解析/列表/启停/删除/导入冲突、mcp patch 解析/启停/删除/upsert 校验与高级键保留/种子 marker/三源解析与导入冲突 | `cd src-tauri && cargo test` |
 | 进程集成测试（2，tests/process.rs） | 用 `tests/fixtures/fake-dsh.cjs`（可脚本化崩溃的假 dsh）验证 就绪→HTTP 200→stop、崩溃→自动重启→二次 Ready | 同上 |
-| 通知集成测试（1，tests/notify_ws.rs） | 本地 WS 服务器发事件帧，验证过滤与端口跟随 | 同上 |
+| 通知集成测试（2，tests/notify_ws.rs） | fixture 双 WS 端点发事件帧，验证 approval 过滤、turn/end 完成通知（含标题）、子代理过滤 | 同上 |
 | 控制台窗口回归（2，tests/console_window.rs） | 正组：CREATE_NO_WINDOW 的子进程**无可见** ConsoleWindowClass 窗口；对照组：CREATE_NEW_CONSOLE 的子进程**有**（证明检测有效，屏幕上会短暂弹真实控制台窗口，属正常） | 同上 |
 | 端到端验收（scripts/acceptance.ps1） | 卸载旧版 → 静默安装 → 启动 → 等 dsh 就绪 → 单实例/无可见控制台/主题/截图 全项校验 | `powershell -File scripts/acceptance.ps1 -SetupExe <exe>` |
 
@@ -245,7 +256,7 @@ scripts/fetch-runtime.ps1
 ## 13. 已知限制与后续路线
 
 - **Win10 深色标题栏聚焦纯黑**：系统行为，见 §8。路线：无边框 + 自绘标题栏（需处理 Win10 贴边分屏），暂缓。
-- **通知覆盖面窄**：只有 approval/question 两类事件；dsh 上游接口稳定后再扩。
+- **通知覆盖**：approval/question + 回合正常完成（turn/end/completed，可带提示音）；任务出错（kind==error）暂不提醒。子代理过滤依赖 events.host 增量帧，host 重连窗口期内可能多弹一条（fail-open）。其余事件类型待 dsh 上游接口稳定后再扩。
 - **dsh 版本固定**：随应用版本钉死（fetch-runtime 的 `-DshVersion`），dsh 升级 = 发新版应用（跟版流程见 §14）。将来可考虑应用内自选 dsh 通道。
 - **UI 缩放只作用于主窗口**：诊断/设置窗口不注入钩子、不应用缩放值；快捷键与步进均可在"其它设置"中自定义。
 - **仅 Windows x64**：平台抽象已就绪，见 §10 的扩展清单。
@@ -269,7 +280,7 @@ scripts/fetch-runtime.ps1
 | --- | --- |
 | 入口 `lib/bin.js` 路径 | `runtime.rs` 的 `paths_for` / `validate_source` |
 | `web --port <N>` 命令形式 | `process.rs` 的 spawn 参数 |
-| 事件通道 `/api/events.mux` 及帧格式 | `notify/` 适配层（`NotifySource` trait 即为此隔离；方法过滤在 `EventFilter`） |
+| 事件通道 `/api/events.mux` + `/api/events.host` 及帧格式 | `notify/` 适配层（`NotifySource` trait 即为此隔离；帧分类在 `handle_mux_frame`/`handle_host_frame`） |
 | `settings.yaml` 的 `ui-theme.preference` | `theme.rs`（解析 + 首启播种） |
 | Node 版本要求 | `fetch-runtime.ps1` 的 `-NodeVersion` |
 | WS 信任栅栏（loopback / 无 Origin） | `notify/ws.rs` 握手 |
@@ -286,8 +297,8 @@ scripts/fetch-runtime.ps1
 | Node 要求 | `^22.19 \|\| >=24`（随包内嵌 v24.19.0） |
 | 入口 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | Web 命令 | `bin.js web --port <N>`，仅绑 127.0.0.1 |
-| 事件通道 | WebSocket `/api/events.mux`（GET → 426） |
-| 事件帧 | `{"type":"server-request","method":"approval/requested"\|"question/requested","payload":{...}}` |
+| 事件通道 | WebSocket `/api/events.mux` + `/api/events.host`（GET → 426，仅 WS） |
+| 事件帧 | `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定用 `session/event` 里的 `turn/end`（`data.reason.kind`），子代理标记用 `host/session-added` 的 `origin` |
 | 设置文件 | `$DSH_HOME/settings.yaml` → `ui-theme.preference: light\|dark\|system` |
 | 信任栅栏 | 允许 loopback + 无 Origin 的 WS 连接 |
 | 许可证 | MIT（Copyright 2026 DeepSeek） |

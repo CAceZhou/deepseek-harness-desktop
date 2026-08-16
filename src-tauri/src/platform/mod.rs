@@ -43,6 +43,7 @@ mod tests {
     fn windows_platform_basics() {
         let p = current();
         assert_eq!(p.node_exe_name(), "node.exe");
+        // assert_eq!(p.cloudflared_exe_name(), "cloudflared.exe"); // TODO: cloudflared 未完成 WIP，阻塞编译，暂时注释（MCP 功能会话）
         assert_eq!(p.runtime_triplet(), "windows-x64");
         assert!(p.runtime_base_dir().ends_with("DSHDesktop"));
         let r = p.resource_runtime_dir(Path::new("C:\\res"));

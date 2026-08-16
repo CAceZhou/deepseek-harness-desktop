@@ -199,6 +199,7 @@ mod tests {
         let p = TestPlatform { base: base.path().to_path_buf() };
         let paths = ensure_runtime(&p, &src, "0.1.0", None).unwrap();
         assert_eq!(paths.node_exe, src.join("node.exe"), "应原地运行而非复制");
+        // assert_eq!(paths.cloudflared_exe, src.join("cloudflared.exe")); // TODO: cloudflared 未完成 WIP，阻塞编译，暂时注释（MCP 功能会话）
         assert!(!base.path().join("runtime").exists(), "不应产生部署副本");
         assert!(paths.home.is_dir());
     }

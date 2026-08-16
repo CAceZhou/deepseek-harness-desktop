@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability set for DSHDesktop windows",
-  "windows": ["main", "diagnostics", "settings"],
+  "windows": ["main", "diagnostics", "settings", "skills", "mcp"],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -19,6 +19,18 @@
     "allow-is-first-launch",
     "allow-zoom-ui",
     "allow-get-shell-settings",
-    "allow-set-shell-settings"
+    "allow-set-shell-settings",
+    "allow-preview-completion-sound",
+    "allow-list-skills",
+    "allow-list-import-sources",
+    "allow-import-skills",
+    "allow-set-skill-enabled",
+    "allow-delete-skill",
+    "allow-list-mcp-servers",
+    "allow-upsert-mcp-server",
+    "allow-set-mcp-enabled",
+    "allow-delete-mcp-server",
+    "allow-list-mcp-import-sources",
+    "allow-import-mcp-servers"
   ]
 }

@@ -7,6 +7,7 @@ use tokio::sync::watch;
 
 pub mod commands;
 pub mod diagnostics;
+pub mod mcp;
 pub mod notify;
 pub mod platform;
 pub mod port;
@@ -14,6 +15,7 @@ pub mod process;
 pub mod progress;
 pub mod runtime;
 pub mod settings;
+pub mod skills;
 pub mod theme;
 pub mod tray;
 pub mod zoom;
@@ -59,6 +61,18 @@ pub fn run() {
             zoom::zoom_ui,
             settings::get_shell_settings,
             settings::set_shell_settings,
+            settings::preview_completion_sound,
+            skills::list_skills,
+            skills::list_import_sources,
+            skills::import_skills,
+            skills::set_skill_enabled,
+            skills::delete_skill,
+            mcp::list_mcp_servers,
+            mcp::upsert_mcp_server,
+            mcp::set_mcp_enabled,
+            mcp::delete_mcp_server,
+            mcp::list_mcp_import_sources,
+            mcp::import_mcp_servers,
         ])
         .on_page_load(|webview, payload| {
             if !matches!(
@@ -67,9 +81,22 @@ pub fn run() {
             ) {
                 return;
             }
+            // 设置/诊断窗口创建时是隐藏的（防白闪），首帧加载完成后显示并聚焦。
+            // 注意此处回调参数是 &Webview：show() 只控制 webview 控件可见性，
+            // 必须经 .window() 拿到 Window 才能把窗口本身显示出来
+            if matches!(webview.label(), "settings" | "diagnostics" | "skills" | "mcp") {
+                let _ = webview.window().show();
+                let _ = webview.window().set_focus();
+                return;
+            }
             // 缩放钩子只注入主窗口（splash 与远程 dsh UI 两个阶段的同一窗口）；
             // 诊断/设置窗口不注入——否则设置窗口里录制 Ctrl+Shift+= 会先被钩子拦截
             if webview.label() == "main" {
+                // 主窗口创建时隐藏（tauri.conf visible:false）：window-state 的 restore
+                // 在 window_created 时排队执行，早于首个 Finished，此刻几何已是记忆值——
+                // 直接 show 就不会有"默认尺寸闪一帧再跳变"（探针实测默认尺寸会可见 ~370ms）
+                let _ = webview.window().show();
+                let _ = webview.window().set_focus();
                 // 每次整页加载后重注入（SPA 内导航不重载页面，不会重复触发）。
                 // 钩子内嵌当前快捷键设置；manage 之前的首帧用默认设置兜底
                 let settings = webview
@@ -91,14 +118,25 @@ pub fn run() {
             let platform: Arc<dyn platform::Platform> = platform::current().into();
             handle.manage(zoom::ZoomState::new(platform.runtime_base_dir()));
             handle.manage(settings::SettingsState::new(platform.runtime_base_dir()));
+            // 技能管理的根目录 = 壳注入给 dsh 的 DSH_HOME（与 runtime.rs 的 home 同源）
+            handle.manage(skills::SkillsHome(platform.runtime_base_dir().join("dsh-home")));
+            // 自动导入独立 dsh 默认目录（~/.dsh/skills）的技能：每次启动只补新技能，
+            // 已见过的记在 .skills-seeded，用户在壳里删掉的不会复活
+            skills::seed_from_default_dsh_home(&platform.runtime_base_dir().join("dsh-home"));
+            // MCP 同理：同步 ~/.dsh 两个 cordis.patch.yml 层里的 dsh-mcp-client 条目，
+            // marker .mcp-seeded 防复活；壳侧管理状态与技能同根（McpHome）
+            handle.manage(mcp::McpHome(platform.runtime_base_dir().join("dsh-home")));
+            mcp::seed_from_default_dsh_home(&platform.runtime_base_dir().join("dsh-home"));
             let version = app.package_info().version.to_string();
             let home_url = app
                 .get_webview_window("main")
                 .and_then(|w| w.url().ok())
                 .unwrap_or_else(|| Url::parse("http://tauri.localhost/").unwrap());
 
-            // dsh 就绪端口通道：Ready（含重启后）时更新，通知 SSE 适配器
+            // dsh 就绪端口通道：Ready（含重启后）时更新，通知 WS 订阅器
             let (port_tx, port_rx) = watch::channel::<Option<u16>>(None);
+            // 事件调试日志路径（与 diagnostics 用的同一份：runtime_base_dir/events.log）
+            let notify_log = platform.runtime_base_dir().join("events.log");
             let sink_handle = handle.clone();
             let sink: NotifySink = Arc::new(move |n: Notification| {
                 // 只在主窗口隐藏（托盘态）时弹原生通知，避免打扰正在操作的用户
@@ -106,19 +144,62 @@ pub fn run() {
                     .get_webview_window("main")
                     .map(|w| w.is_visible().unwrap_or(true))
                     .unwrap_or(true);
-                if !visible {
-                    let _ = sink_handle
-                        .notification()
-                        .builder()
-                        .title(n.title)
-                        .body(n.body)
-                        .show();
+                if visible {
+                    return;
                 }
+                let settings = sink_handle
+                    .try_state::<settings::SettingsState>()
+                    .map(|s| s.get())
+                    .unwrap_or_default();
+                let mut builder = sink_handle
+                    .notification()
+                    .builder()
+                    .title(n.title)
+                    .body(n.body.clone());
+                match n.kind {
+                    // 待批准/待回答：维持静音 toast，不受完成通知开关影响
+                    notify::NotifyKind::Attention => {}
+                    notify::NotifyKind::TurnCompleted => {
+                        if !settings.notify_on_completion {
+                            return;
+                        }
+                        if let Some(name) = settings.completion_sound.toast_sound_name() {
+                            builder = builder.sound(name);
+                        }
+                    }
+                }
+                append_debug_line(&notify_log, &format!("Notify: {:?} {}", n.kind, n.body));
+                let _ = builder.show();
             });
-            let ws = Box::new(notify::ws::WsSource {
-                filter: notify::EventFilter::default(),
+            // mux（会话事件 → 通知/标题）+ host（子代理标记）双下行流，共享 SessionBook
+            let book = Arc::new(std::sync::Mutex::new(notify::SessionBook::default()));
+            let mux_book = book.clone();
+            let mux_handler: notify::FrameHandler = Arc::new(move |frame, sink| {
+                notify::handle_mux_frame(frame, sink, &mux_book);
             });
-            tauri::async_runtime::spawn(ws.run(sink, port_rx));
+            let host_book = book.clone();
+            let host_handler: notify::FrameHandler = Arc::new(move |frame, _| {
+                notify::handle_host_frame(frame, &host_book);
+            });
+            let reconnect_book = book.clone();
+            tauri::async_runtime::spawn(
+                Box::new(notify::ws::WsSource {
+                    path: "/api/events.mux",
+                    handler: mux_handler,
+                    on_connect: None,
+                })
+                .run(sink.clone(), port_rx.clone()),
+            );
+            tauri::async_runtime::spawn(
+                Box::new(notify::ws::WsSource {
+                    path: "/api/events.host",
+                    handler: host_handler,
+                    on_connect: Some(Arc::new(move || {
+                        reconnect_book.lock().unwrap().clear_subagents();
+                    })),
+                })
+                .run(sink, port_rx),
+            );
 
             let source = std::env::var_os("DSHDESKTOP_RUNTIME_DIR")
                 .map(PathBuf::from)
@@ -234,8 +315,8 @@ pub fn run() {
         .expect("error while running DSHDesktop");
 }
 
-/// 追加事件到调试日志；超过 1MB 时截断重来（只用于现场诊断，不求完备）。
-fn append_debug_log(path: &PathBuf, event: &ProcessEvent) {
+/// 追加一行到调试日志；超过 1MB 时截断重来（只用于现场诊断，不求完备）。
+pub(crate) fn append_debug_line(path: &std::path::Path, line: &str) {
     use std::io::Write;
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > 1024 * 1024 {
@@ -243,12 +324,16 @@ fn append_debug_log(path: &PathBuf, event: &ProcessEvent) {
         }
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let line = match event {
-            ProcessEvent::StateChanged(s) => format!("{s:?}"),
-            ProcessEvent::Log(l) => l.clone(),
-        };
         let _ = writeln!(f, "{line}");
     }
+}
+
+fn append_debug_log(path: &PathBuf, event: &ProcessEvent) {
+    let line = match event {
+        ProcessEvent::StateChanged(s) => format!("{s:?}"),
+        ProcessEvent::Log(l) => l.clone(),
+    };
+    append_debug_line(path, &line);
 }
 
 fn bridge_event(

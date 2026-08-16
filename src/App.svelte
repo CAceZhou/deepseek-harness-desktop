@@ -2,6 +2,8 @@
   import Splash from './splash/Splash.svelte'
   import Diagnostics from './diagnostics/Diagnostics.svelte'
   import Settings from './settings/Settings.svelte'
+  import Skills from './skills/Skills.svelte'
+  import Mcp from './mcp/Mcp.svelte'
 
   let route = $state(window.location.hash)
   window.addEventListener('hashchange', () => {
@@ -13,6 +15,10 @@
   <Diagnostics />
 {:else if route.startsWith('#/settings')}
   <Settings />
+{:else if route.startsWith('#/skills')}
+  <Skills />
+{:else if route.startsWith('#/mcp')}
+  <Mcp />
 {:else}
   <Splash />
 {/if}
