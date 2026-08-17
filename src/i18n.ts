@@ -33,7 +33,6 @@ const en: Record<string, string> = {
   '任务完成': 'Task completed',
   '仅后台时提醒': 'Only in background',
   '总是提醒': 'Always',
-  '后台 = 本应用窗口均未聚焦；正在前台操作时不会弹通知打扰': 'Background = no app window is focused; nothing pops up while you are using the app',
   '完成提示音': 'Completion sound',
   '无提示音': 'Silent',
   '系统默认': 'System default',

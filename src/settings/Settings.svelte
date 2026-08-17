@@ -215,7 +215,6 @@
         </span>
       </div>
     {/each}
-    <p class="hint">{t('后台 = 本应用窗口均未聚焦；正在前台操作时不会弹通知打扰')}</p>
     <div class="divider"></div>
     <div class="row">
       <span>{t('完成提示音')}</span>
@@ -378,12 +377,6 @@
   .group-label {
     font-size: 13px;
     color: var(--text-2);
-  }
-  .hint {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-2);
-    opacity: 0.8;
   }
   .notice {
     margin: 0;
