@@ -7,6 +7,14 @@
 ; "Can't write: ...\cloudflared.exe" 中止。
 ; >=0.1.9 起子进程全部挂进 KILL_ON_JOB_CLOSE Job 随父进程退出被内核回收；
 ; 这里的钩子是清理旧版本遗留孤儿的兜底路径，长期保留。
+;
+; 0.1.13 修复：路径清扫必须排除"调用方自身"——覆盖安装/升级时新版安装器以
+; `_?=$INSTDIR` 原地运行旧卸载器，卸载器的 ExecutablePath 同样落在
+; $INSTDIR\* 模式里，0.1.9~0.1.12 的清扫会把卸载器自己杀掉：
+; 卸载中途死透、文件一个没删，新版安装器拿到非零退出码弹 "Unable to uninstall!"。
+; （从开始菜单/设置卸载不受影响：卸载器自我复制到 %TEMP% 运行，路径不匹配模式。）
+; 排除方式取 PowerShell 父进程 PID（nsExec 直接 CreateProcess，父进程即调用方），
+; 与可执行名无关。
 
 !macro DSHDESKTOP_KILL_STRAY_RUNTIME_PROCESSES
   ; 1) 主程序仍在运行：连整棵子进程树一起杀（/T 树、/F 强制）
@@ -14,12 +22,14 @@
   Pop $0
   Pop $1
   ; 2) 主程序已被强杀、只剩孤儿：按可执行路径清扫 $INSTDIR 下的所有残留进程
-  ;    （runtime 里的 node.exe / cloudflared.exe 及 dsh 经内嵌 node 拉起的帮助进程）
-  nsExec::ExecToStack "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $\"Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -like '$INSTDIR\*' } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }$\""
+  ;    （runtime 里的 node.exe / cloudflared.exe 及 dsh 经内嵌 node 拉起的帮助进程），
+  ;    但排除调用方自身（见文件头注释）。然后轮询等进程退净（句柄释放），
+  ;    最多等 10s，避免紧跟着的写/删文件仍被占用。
+  nsExec::ExecToStack "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $\"$$self = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $$PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -like '$INSTDIR\*' -and $$_.ProcessId -ne $$self } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; $$deadline = (Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 400; $$left = @(Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -like '$INSTDIR\*' -and $$_.ProcessId -ne $$self }) } while ($$left.Count -gt 0 -and (Get-Date) -lt $$deadline)$\""
   Pop $0
   Pop $1
-  ; 等内核回收文件句柄，避免紧跟着的写/删文件仍被占用
-  Sleep 1500
+  ; 进程对象销毁到句柄完全释放还有一瞬，再补 500ms
+  Sleep 500
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
@@ -30,4 +40,12 @@
 !macro NSIS_HOOK_PREUNINSTALL
   DetailPrint "Stopping DSHDesktop background processes..."
   !insertmacro DSHDESKTOP_KILL_STRAY_RUNTIME_PROCESSES
+!macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ; 卸载器按清单删文件，dsh 运行时自更新新增的文件（不在清单里）会留下来，
+  ; 导致 $INSTDIR 删不掉、升级后新旧 runtime 文件混杂。进程已在 PREUNINSTALL
+  ; 清完，这里强删整个 runtime 树兜底；之后模板自带的空目录 RMDir 才能收掉
+  ; $INSTDIR。/UPDATE 模式同样安全：新版安装器随后会重新解出完整 runtime。
+  RMDir /r /REBOOTOK "$INSTDIR\runtime"
 !macroend

@@ -243,7 +243,7 @@ scripts/fetch-runtime.ps1
 - `pnpm tauri build` → NSIS `src-tauri/target/release/bundle/nsis/DSHDesktop_<ver>_x64-setup.exe`。
 - WebView2：缺失时安装程序联网下载安装（downloadBootstrapper 模式），因此安装包本体不含 WebView2。
 - 静默安装：`setup.exe /S`（加 `/D=<dir>` 指定目录）。运行中的旧实例由安装器自动结束，无需手动卸载或杀进程。
-- NSIS 钩子（`src-tauri/windows/nsis-hooks.nsh`，经 `bundle.windows.nsis.installerHooks` 接入，**路径相对 `src-tauri`**）：`NSIS_HOOK_PREINSTALL`/`NSIS_HOOK_PREUNINSTALL` 先 `taskkill /F /T /IM DSHDesktop.exe` 杀整棵树，再用 PowerShell 按可执行路径清扫 `$INSTDIR` 下的所有残留进程（≤0.1.8 遗留的孤儿 node.exe/cloudflared.exe），最后 Sleep 1.5s 等内核回收句柄。Tauri 模板自带的 `CheckIfAppIsRunning` 只杀主程序，杀不动子进程，单靠它必然复现 "Can't write" 失败。
+- NSIS 钩子（`src-tauri/windows/nsis-hooks.nsh`，经 `bundle.windows.nsis.installerHooks` 接入，**路径相对 `src-tauri`**）：`NSIS_HOOK_PREINSTALL`/`NSIS_HOOK_PREUNINSTALL` 先 `taskkill /F /T /IM DSHDesktop.exe` 杀整棵树，再用 PowerShell 按可执行路径清扫 `$INSTDIR` 下的所有残留进程（≤0.1.8 遗留的孤儿 node.exe/cloudflared.exe），然后轮询等进程退净（≤10s）等内核回收句柄。Tauri 模板自带的 `CheckIfAppIsRunning` 只杀主程序，杀不动子进程，单靠它必然复现 "Can't write" 失败。**清扫必须排除调用方自身**（取 PowerShell 父进程 PID）：覆盖安装/升级时模板在 `PageLeaveReinstall` 以 `_?=$INSTDIR` 原地运行旧卸载器，`$INSTDIR\uninstall.exe` 同样匹配 `$INSTDIR\*` 模式——0.1.9~0.1.12 没排除，卸载器把自己杀了，文件没删、退出码非零，新安装器弹 "Unable to uninstall!" 中止；独立卸载（设置/开始菜单）会自我复制到 %TEMP% 运行所以从不触发。`NSIS_HOOK_POSTUNINSTALL` 再 `RMDir /r "$INSTDIR\runtime"` 兜底清单外残留（dsh 自更新新增的文件不在卸载清单里），模板的空目录 RMDir 才能收掉 `$INSTDIR`。已知问题：≤0.1.12 升级 ≥0.1.13 会最后一次弹该对话框（旧卸载器无法被新安装器修复），先在系统设置里卸载再装即可。
 - 国内构建机直连 GitHub 不稳时，NSIS 下载可用 ghproxy 预置 `%LOCALAPPDATA%\tauri\NSIS`（细节见 AGENTS.md）。
 
 ### CI 与发布

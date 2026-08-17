@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-08-18
+
+### Fixed
+
+- Installing over an existing copy (upgrade or reinstall) no longer aborts with "Unable to uninstall!". The cleanup sweep added in 0.1.9 kills every process whose executable lives under the install directory — and the Tauri template runs the old uninstaller **in place** via `_?=$INSTDIR`, so `uninstall.exe` matched the sweep pattern and the uninstaller killed itself mid-hook, before deleting a single file; the new installer then saw a non-zero exit code and aborted. The sweep now excludes the caller's own process (its PowerShell parent PID, so it is name-agnostic). Standalone uninstalls were never affected because the uninstaller self-copies to %TEMP% unless `_?=` is passed, which is why the bug only surfaced on in-place upgrades. Known issue: upgrading **from ≤0.1.12** still hits the dialog one final time (the old uninstaller cannot be patched by the new installer) — uninstall from Windows Settings first, then run the new setup
+- Leftover runtime files after uninstall: the uninstaller only deletes files recorded in its install manifest, so files added later by dsh self-updates (e.g. new node_modules packages) survived and kept `$INSTDIR` non-empty. A POSTUNINSTALL hook now force-removes the runtime tree after the manifest deletions
+- The pre-install/pre-uninstall cleanup now polls until the killed processes are actually gone (up to 10s) instead of a fixed 1.5s sleep, so slow-to-die node.exe/cloudflared.exe can't still hold runtime files when deletion starts
+
 ## [0.1.12] - 2026-08-17
 
 ### Fixed
