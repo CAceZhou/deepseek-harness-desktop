@@ -7,7 +7,7 @@
   type CompletionSound = 'silent' | 'default' | 'im' | 'mail' | 'reminder' | 'sms' | 'chime' | 'drop' | 'mellow'
   type NotifyTiming = 'background' | 'always'
   type NotifyRule = { enabled: boolean; timing: NotifyTiming }
-  // 与 Rust 端 NotifySettings 对应：approval=任务确认 question=选项选择 turn_done=回答完毕
+  // 与 Rust 端 NotifySettings 对应：approval=任务确认 question=选项选择 turn_done=任务完成
   type NotifySettings = { approval: NotifyRule; question: NotifyRule; turn_done: NotifyRule }
   type ShellSettings = {
     zoom_step: number
@@ -44,9 +44,9 @@
 
   // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
   const NOTIFY_ROWS: { key: keyof NotifySettings; label: string }[] = [
-    { key: 'approval', label: '任务确认（待批准）' },
-    { key: 'question', label: '选项选择（待回答）' },
-    { key: 'turn_done', label: '回答完毕（任务完成）' },
+    { key: 'approval', label: '任务确认' },
+    { key: 'question', label: '选项选择' },
+    { key: 'turn_done', label: '任务完成' },
   ]
 
   let zoomIn = $state<Shortcut>({ ...DEFAULTS.zoom_in })
@@ -190,7 +190,7 @@
     <span class="group-label">{t('关闭主窗口时')}</span>
     <label class="check">
       <input type="radio" bind:group={closeBehavior} value="background" />
-      {t('保持后台运行（最小化到托盘）')}
+      {t('最小化到托盘')}
     </label>
     <label class="check">
       <input type="radio" bind:group={closeBehavior} value="quit" />

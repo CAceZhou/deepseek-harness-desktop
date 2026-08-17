@@ -5,6 +5,7 @@
 //!
 //! RemoteManager 管生命周期：每次 start 重新生成 token、起代理与隧道监督；
 //! 隧道 URL 就绪后拼出带 token 的链接；stop/退出应用即整体关停，链接立即失效。
+//! 链接泄露时用 reset_link 原地轮换 token 并掐断现有会话（域名不变）。
 pub mod proxy;
 pub mod tunnel;
 
@@ -232,6 +233,27 @@ impl RemoteManager {
         st
     }
 
+    /// 重置访问链接：原地轮换 token 并掐断所有已建立会话（代理门岗逐请求读
+    /// 最新 token，旧链接/旧 cookie 立即失效；WS 桥接被 drain 掐断）。
+    /// 隧道与域名保持不变，无需重新建立。链接泄露后的吊销手段。
+    pub fn reset_link(&self) -> Result<RemoteStatus, String> {
+        let st = {
+            let mut g = self.shared.inner.lock().unwrap();
+            if !matches!(g.phase, Phase::Starting | Phase::Up) {
+                return Err("远程访问未开启".into());
+            }
+            let Some(proxy) = &g.proxy else {
+                return Err("远程访问代理未就绪，请稍后重试".into());
+            };
+            let token: Arc<str> = generate_token().into();
+            proxy.reset_token(token.clone());
+            g.token = Some(token);
+            g.dto()
+        };
+        (self.shared.on_event)(RemoteEvent::Status(st.clone()));
+        Ok(st)
+    }
+
     fn transition_error(&self, msg: String) -> RemoteStatus {
         let st = {
             let mut g = self.shared.inner.lock().unwrap();
@@ -298,6 +320,12 @@ pub fn get_remote_status(state: State<'_, RemoteManager>) -> RemoteStatus {
 #[tauri::command]
 pub fn copy_remote_link(state: State<'_, RemoteManager>) -> Result<(), String> {
     copy_link_to_clipboard(&state)
+}
+
+/// 重置访问链接（token 轮换 + 掐断现有会话），隧道与域名不变
+#[tauri::command]
+pub fn reset_remote_link(state: State<'_, RemoteManager>) -> Result<RemoteStatus, String> {
+    state.reset_link()
 }
 
 /// 托盘菜单与 invoke 命令共用的复制逻辑

@@ -15,6 +15,7 @@
   let status = $state<RemoteStatus | null>(null)
   let qrSvg = $state('')
   let copied = $state(false)
+  let resetDone = $state(false)
   let busy = $state(false)
 
   onMount(() => {
@@ -56,6 +57,22 @@
       // 链接未就绪时按钮本就禁用；竞态下静默即可（托盘有 toast 反馈的场景在 tray.rs）
     }
   }
+
+  // 重置链接：token 原地轮换 + 掐断现有会话，隧道域名不变；旧链接/旧设备即刻失效
+  async function resetLink() {
+    if (busy || !status) return
+    if (!window.confirm(t('重置后当前链接与所有已连接的设备都会立即失效，确定重置？'))) return
+    busy = true
+    try {
+      status = await invoke<RemoteStatus>('reset_remote_link')
+      resetDone = true
+      setTimeout(() => (resetDone = false), 2000)
+    } catch {
+      // 未开启时按钮本不显示；竞态下静默即可
+    } finally {
+      busy = false
+    }
+  }
 </script>
 
 <main>
@@ -75,6 +92,7 @@
         <p class="link">{status.link}</p>
         <div class="actions">
           <button class="primary" onclick={copy}>{copied ? t('已复制') : t('复制链接')}</button>
+          <button onclick={resetLink} disabled={busy}>{resetDone ? t('已重置') : t('重置链接')}</button>
           <button onclick={toggle} disabled={busy}>{t('关闭远程访问')}</button>
         </div>
       {:else if status.phase === 'starting'}
@@ -95,6 +113,7 @@
     </section>
     <p class="tip warnline">{t('链接即凭据，请勿分享给他人')}</p>
     <p class="tip dim">{t('每次开启都会生成新链接，旧链接即刻失效')}</p>
+    <p class="tip dim">{t('链接泄露时点“重置链接”立即吊销，隧道域名不变')}</p>
   {/if}
 </main>
 

@@ -15,11 +15,12 @@ pub const MENU_REMOTE_ENABLE: &str = "remote-enable";
 pub const MENU_REMOTE_DISABLE: &str = "remote-disable";
 pub const MENU_REMOTE_COPY: &str = "remote-copy";
 pub const MENU_REMOTE_QR: &str = "remote-qr";
+pub const MENU_REMOTE_RESET: &str = "remote-reset";
 pub const MENU_RESTART: &str = "restart";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_QUIT: &str = "quit";
 
-/// 远程访问子菜单的四个菜单项句柄。Windows 托盘菜单项文案不可改（locale 切换只能
+/// 远程访问子菜单的五个菜单项句柄。Windows 托盘菜单项文案不可改（locale 切换只能
 /// 重建整个菜单），但 enabled 状态可改——菜单重建后须替换本结构里的句柄。
 pub struct TrayRemoteItems(pub Mutex<RemoteItems>);
 
@@ -28,6 +29,7 @@ pub struct RemoteItems {
     pub disable: MenuItem<tauri::Wry>,
     pub copy: MenuItem<tauri::Wry>,
     pub qr: MenuItem<tauri::Wry>,
+    pub reset: MenuItem<tauri::Wry>,
 }
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -73,6 +75,21 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             MENU_REMOTE_QR => open_remote(app),
+            MENU_REMOTE_RESET => {
+                if let Some(rm) = app.try_state::<RemoteManager>() {
+                    if rm.reset_link().is_ok() {
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title(i18n::pick("远程访问", "Remote access"))
+                            .body(i18n::pick(
+                                "链接已重置，旧链接与已连接的设备即刻失效",
+                                "Link reset — the old link and connected devices are revoked",
+                            ))
+                            .show();
+                    }
+                }
+            }
             MENU_RESTART => {
                 if let Some(state) = app.try_state::<SharedState>() {
                     let proc = state.process.clone();
@@ -114,7 +131,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, RemoteItems)>
         None::<&str>,
     )?;
     let mcp = MenuItem::with_id(app, MENU_MCP, i18n::pick("MCP管理", "MCP servers"), true, None::<&str>)?;
-    // 远程访问子菜单：开启/关闭互斥启用，复制/二维码仅 Up 可用（初始 off 态）
+    // 远程访问子菜单：开启/关闭互斥启用，复制/二维码/重置仅 Up 可用（初始 off 态）
     let remote_items = RemoteItems {
         enable: MenuItem::with_id(
             app,
@@ -144,6 +161,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, RemoteItems)>
             false,
             None::<&str>,
         )?,
+        reset: MenuItem::with_id(
+            app,
+            MENU_REMOTE_RESET,
+            i18n::pick("重置远程链接", "Reset remote link"),
+            false,
+            None::<&str>,
+        )?,
     };
     let remote = Submenu::with_items(
         app,
@@ -154,6 +178,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, RemoteItems)>
             &remote_items.disable,
             &remote_items.copy,
             &remote_items.qr,
+            &remote_items.reset,
         ],
     )?;
     let restart = MenuItem::with_id(
@@ -222,6 +247,7 @@ pub fn update_remote_items(app: &AppHandle, phase: &str) {
     let _ = g.disable.set_enabled(disable);
     let _ = g.copy.set_enabled(link);
     let _ = g.qr.set_enabled(link);
+    let _ = g.reset.set_enabled(link);
 }
 
 fn window_title(zh: &str, en: &str) -> String {

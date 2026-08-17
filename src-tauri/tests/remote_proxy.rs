@@ -284,3 +284,127 @@ async fn shutdown_stops_listener() {
     let res = get_direct(&url).await;
     assert!(res.is_err(), "shutdown 后新连接应被拒，实际 {res:?}");
 }
+
+/// 重置链接（token 轮换）：旧 token 与旧 cookie 立即失效，新 token 正常种 cookie。
+/// 代理与隧道都不重启，端口不变。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reset_token_revokes_old_credential() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut child = spawn_fixture(dsh_port, work.path());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(r) = get_direct(&format!("http://127.0.0.1:{dsh_port}/")).await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "fixture 15s 内未就绪");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let (proxy, old_token) = start_proxy(Some(dsh_port)).await;
+    let base = format!("http://127.0.0.1:{}", proxy.port);
+    let http = client();
+    let old_port = proxy.port;
+
+    // 重置前：旧凭据可用
+    let r = http
+        .get(format!("{base}/"))
+        .header("cookie", format!("{COOKIE_NAME}={old_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "重置前旧 cookie 应放行");
+
+    let new_token: Arc<str> = dshdesktop_lib::remote::generate_token().into();
+    proxy.reset_token(new_token.clone());
+    assert_eq!(proxy.port, old_port, "重置不应重启代理（端口不变）");
+
+    // 旧 cookie → 403
+    let r = http
+        .get(format!("{base}/"))
+        .header("cookie", format!("{COOKIE_NAME}={old_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "重置后旧 cookie 应失效");
+
+    // 旧链接里的 token → 403
+    let r = http
+        .get(format!("{base}/?token={old_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "重置后旧 token 应失效");
+
+    // 新 token → 302 + 种新 cookie
+    let r = http
+        .get(format!("{base}/?token={new_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302, "新 token 应 302 种 cookie");
+    let r = http
+        .get(format!("{base}/"))
+        .header("cookie", format!("{COOKIE_NAME}={new_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "新 cookie 应放行");
+
+    let _ = child.kill();
+    proxy.shutdown().await;
+}
+
+/// 重置链接必须掐断已建立的 WS 桥接——否则链接泄露时攻击者已开的页面
+/// 仍能持续收事件流，重置形同虚设。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reset_token_drops_live_ws() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut child = spawn_fixture(dsh_port, work.path());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(r) = get_direct(&format!("http://127.0.0.1:{dsh_port}/")).await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "fixture 15s 内未就绪");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let url = format!("ws://127.0.0.1:{}/api/events.mux", proxy.port);
+    let mut req = url.into_client_request().unwrap();
+    req.headers_mut()
+        .insert("cookie", format!("{COOKIE_NAME}={token}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req)
+        .await
+        .expect("带 cookie 的 WS 握手应成功");
+
+    use futures::StreamExt;
+    // 确认桥接已通（能收到 fixture 心跳）
+    let first = tokio::time::timeout(Duration::from_secs(10), ws.next()).await;
+    assert!(matches!(first, Ok(Some(Ok(_)))), "桥接应已建立：{first:?}");
+
+    let new_token: Arc<str> = dshdesktop_lib::remote::generate_token().into();
+    proxy.reset_token(new_token);
+
+    // 桥接被掐断：读侧应在 5s 内收到 Close 或连接错误/EOF
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return true,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "重置后已建立的 WS 应在 5s 内被掐断");
+
+    let _ = child.kill();
+    proxy.shutdown().await;
+}
+

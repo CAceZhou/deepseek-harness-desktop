@@ -37,6 +37,7 @@
     "allow-stop-remote",
     "allow-get-remote-status",
     "allow-copy-remote-link",
-    "allow-get-remote-qr"
+    "allow-get-remote-qr",
+    "allow-reset-remote-link"
   ]
 }

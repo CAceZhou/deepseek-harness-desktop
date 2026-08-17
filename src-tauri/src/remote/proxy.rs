@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use futures::{SinkExt, StreamExt};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{watch, Notify};
 use tokio_tungstenite::tungstenite::Message as DshMessage;
@@ -31,15 +31,22 @@ const GATE_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><tit
 <body style=\"font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0\">\
 <p>DSHDesktop 远程访问：链接无效或已过期。<br>请在电脑托盘菜单重新生成链接。</p></body></html>";
 
+/// 当前有效 token 的共享单元：重置链接时原地轮换，门岗逐请求读最新值
+type TokenCell = Arc<RwLock<Arc<str>>>;
+
 #[derive(Clone)]
 struct ProxyState {
-    token: Arc<str>,
+    token: TokenCell,
+    /// 重置链接时 notify_waiters 掐断所有已建立的 WS 桥接
+    drain: Arc<Notify>,
     dsh_port: watch::Receiver<Option<u16>>,
     client: reqwest::Client,
 }
 
 pub struct ProxyHandle {
     pub port: u16,
+    token: TokenCell,
+    drain: Arc<Notify>,
     stop: Arc<Notify>,
     stopped: Arc<Notify>,
 }
@@ -48,8 +55,17 @@ impl ProxyHandle {
     /// 优雅停服并等待监听器与空闲连接关闭（消费自身；句柄不可复用）。
     /// hyper 的 graceful shutdown 会立即关闭空闲 keep-alive 连接，只等在途请求。
     pub async fn shutdown(self) {
+        // 先掐断长驻的 WS 桥接，否则 stopped 要等它们自然结束
+        self.drain.notify_waiters();
         self.stop.notify_one();
         self.stopped.notified().await;
+    }
+
+    /// 重置访问链接：轮换 token（旧链接/旧 cookie 立即失效）并掐断所有
+    /// 已建立的 WS 桥接；监听器与端口不变，隧道无需重启、域名不变。
+    pub fn reset_token(&self, new_token: Arc<str>) {
+        *self.token.write().unwrap() = new_token;
+        self.drain.notify_waiters();
     }
 }
 
@@ -60,12 +76,15 @@ pub async fn spawn_proxy(
 ) -> std::io::Result<ProxyHandle> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let port = listener.local_addr()?.port();
+    let token_cell: TokenCell = Arc::new(RwLock::new(token));
+    let drain = Arc::new(Notify::new());
     let stop = Arc::new(Notify::new());
     let stopped = Arc::new(Notify::new());
     let stop2 = stop.clone();
     let stopped2 = stopped.clone();
     let state = ProxyState {
-        token,
+        token: token_cell.clone(),
+        drain: drain.clone(),
         dsh_port,
         client: reqwest::Client::builder()
             // 3xx 原样透传给浏览器，不由代理代为跟随
@@ -88,6 +107,8 @@ pub async fn spawn_proxy(
     });
     Ok(ProxyHandle {
         port,
+        token: token_cell,
+        drain,
         stop,
         stopped,
     })
@@ -106,10 +127,12 @@ async fn handler(State(st): State<ProxyState>, req: Request) -> Response {
         .and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "token"))
         .map(|(_, v)| v.into_owned());
 
-    let cookie_ok = cookie_authed(headers, &st.token);
+    // 逐请求读最新 token：重置链接后旧凭据即刻失效
+    let current_token = st.token.read().unwrap().clone();
+    let cookie_ok = cookie_authed(headers, &current_token);
     match (cookie_ok, query_token) {
         (true, _) => {} // 已持 cookie：放行（旧链接里的过期 token 不影响）
-        (false, Some(t)) if token_eq(&t, &st.token) => {
+        (false, Some(t)) if token_eq(&t, &current_token) => {
             // 302 剥离 token + 种 cookie；浏览器地址栏不留凭据
             let location = strip_token_query(&path_and_query);
             return (
@@ -209,6 +232,12 @@ async fn bridge_upgrade(st: ProxyState, req: Request, path_and_query: String) ->
 }
 
 async fn bridge(client: WebSocket, st: ProxyState, path_and_query: String) {
+    // 提前注册 drain 等待（enable 即在 Notify 上挂号）：重置/停服若在
+    // 下面的 connect 期间触发，select 开始时仍能立刻收到，桥接不漏掐
+    let drained = st.drain.notified();
+    tokio::pin!(drained);
+    drained.as_mut().enable();
+
     let Some(port) = *st.dsh_port.borrow() else {
         return;
     };
@@ -238,6 +267,8 @@ async fn bridge(client: WebSocket, st: ProxyState, path_and_query: String) {
     tokio::select! {
         _ = up => {}
         _ = down => {}
+        // 重置链接/停服：掐断桥接，两端 socket 随 future 析构关闭
+        _ = drained => {}
     }
     let _ = client_tx.send(Message::Close(None)).await;
     let _ = dsh_tx.send(DshMessage::Close(None)).await;

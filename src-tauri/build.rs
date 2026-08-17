@@ -34,6 +34,7 @@ fn main() {
                 "get_remote_status",
                 "copy_remote_link",
                 "get_remote_qr",
+                "reset_remote_link",
             ]),
         ),
     )

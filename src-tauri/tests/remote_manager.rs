@@ -243,3 +243,82 @@ async fn full_chain_up_then_off() {
 
     let _ = dsh.kill();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reset_link_requires_running() {
+    let work = tempfile::tempdir().unwrap();
+    let (mgr, _statuses) = make_manager(
+        work.path().join("no-such-cloudflared.exe"),
+        vec![],
+        work.path(),
+        None,
+    );
+    assert!(mgr.reset_link().is_err(), "off 态重置应报错");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reset_link_rotates_token_keeps_url() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut dsh = spawn_fixture_dsh(dsh_port, work.path());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(r) = get_direct(&format!("http://127.0.0.1:{dsh_port}/")).await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "fixture dsh 15s 内未就绪");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let (mgr, _statuses) = make_manager(
+        system_node(),
+        vec![fixture("fake-cloudflared.cjs")
+            .to_string_lossy()
+            .into_owned()],
+        work.path(),
+        Some(dsh_port),
+    );
+    mgr.start().await;
+    let s = wait_phase(&mgr, "up", Duration::from_secs(30)).await;
+    let old_link = s.link.unwrap();
+    let old_token = old_link.rsplit("?token=").next().unwrap().to_string();
+    let proxy_port = s.proxy_port.unwrap();
+
+    // 重置：token 轮换、域名与代理端口不变
+    let s2 = mgr.reset_link().expect("Up 态重置应成功");
+    assert_eq!(s2.phase, "up");
+    let new_link = s2.link.unwrap();
+    assert_eq!(
+        new_link.split("?token=").next(),
+        old_link.split("?token=").next(),
+        "重置不应换隧道域名"
+    );
+    assert_eq!(s2.proxy_port, Some(proxy_port), "重置不应重启代理");
+    let new_token = new_link.rsplit("?token=").next().unwrap().to_string();
+    assert_ne!(old_token, new_token, "token 必须轮换");
+
+    // 门岗即刻生效：旧凭据 403，新凭据放行
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+        .unwrap();
+    let r = http
+        .get(format!("http://127.0.0.1:{proxy_port}/"))
+        .header("cookie", format!("__dsh_remote={old_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "旧 cookie 应立即失效");
+    let r = http
+        .get(format!("http://127.0.0.1:{proxy_port}/?token={new_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302, "新 token 应正常种 cookie");
+
+    mgr.stop().await;
+    let _ = dsh.kill();
+}

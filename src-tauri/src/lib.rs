@@ -81,6 +81,7 @@ pub fn run() {
             remote::get_remote_status,
             remote::copy_remote_link,
             remote::get_remote_qr,
+            remote::reset_remote_link,
         ])
         .on_page_load(|webview, payload| {
             if !matches!(
