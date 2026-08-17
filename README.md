@@ -12,12 +12,16 @@ A desktop shell for [deepseek-harness](https://github.com/deepseek-ai/deepseek-h
 
 - **Zero prerequisites.** Node.js 24 and dsh ship inside the installer; the app works out of the box on Windows 10/11 x64. WebView2 is installed automatically if missing.
 - **Official UI in a native window.** Spawns `dsh web` on a free loopback port and opens the official Web UI as soon as it is ready.
+- **Remote access from your phone.** One click in the tray menu starts a Cloudflare Quick Tunnel (cloudflared is bundled) behind the shell's token-gated proxy; scan the QR code and the full dsh Web UI is on your phone. The random token regenerates on every start and dies the moment you stop it — no server, account, or configuration needed.
 - **Guided first launch.** A stage-based progress bar shows runtime preparation, service startup, and readiness while the app initializes for the first time.
-- **Tray resident.** Closing the window hides it to the tray. Tray menu: open, diagnostics, restart service, quit.
-- **Native notifications.** dsh approval requests and questions become Windows notifications while the window is hidden.
+- **Tray resident.** Closing the window hides it to the tray (or exits — your choice in Settings). Tray menu: open, diagnostics, skills, MCP servers, remote access, restart service, settings, quit.
+- **Native notifications.** dsh approval requests and questions become Windows notifications while the window is hidden; completed turns can notify too, with optional built-in sounds.
+- **Skills and MCP management.** Enable, disable, or delete skills (hot-reloaded by dsh's watcher) and import them from codex/claude/opencode; edit dsh's MCP server entries with hot-reload, no restart needed.
 - **Crash resilience.** The dsh process is supervised and restarted with exponential backoff.
-- **Theme following.** The title bar follows dsh's light, dark, or system setting in real time.
-- **Diagnostics panel.** Service state, port, PID, live logs, one-click restart, and an autostart toggle.
+- **Theme and language following.** The title bar and the shell's own pages follow dsh's light/dark/system theme; the tray menu and local pages follow dsh's UI language (Chinese/English).
+- **Diagnostics panel.** Service state, port, PID, live logs, remote-access state, one-click restart, and an autostart toggle.
+- **Settings window.** Zoom step and shortcuts, close-window behavior, completion-notification toggle and sound.
+- **Remembers window geometry.** Size and position are restored on the next launch.
 - **Single instance.** A second launch simply focuses the existing window.
 
 ## Download and install
@@ -41,7 +45,7 @@ Rust core: runtime / process supervision / tray / notifications / theme / diagno
 bundled node.exe + dsh web --port <free port>   (binds 127.0.0.1 only)
 ```
 
-dsh events (approval requested, question asked) are consumed over dsh's WebSocket channel `/api/events.mux`. Everything platform-specific sits behind a `Platform` trait, leaving the door open for macOS and Linux. Full details in [docs/design.md](docs/design.md).
+dsh events (approval requested, question asked) are consumed over dsh's WebSocket channel `/api/events.mux`. With remote access enabled the chain gains a hop: phone → Cloudflare edge → cloudflared (outbound-only) → the shell's token-gate proxy on 127.0.0.1 → dsh. Everything platform-specific sits behind a `Platform` trait, leaving the door open for macOS and Linux. Full details in [docs/design.md](docs/design.md).
 
 ## Build from source
 
@@ -51,7 +55,7 @@ Prerequisites: Rust (stable), Node.js 22 or later, pnpm 11.
 pnpm install
 
 # prepare the bundled runtime (pick one)
-powershell -File scripts/fetch-runtime.ps1        # real runtime (Node 24 + dsh 0.1.0-rc.6)
+powershell -File scripts/fetch-runtime.ps1        # real runtime (Node 24 + dsh 0.1.0-rc.6 + cloudflared)
 powershell -File scripts/use-fixture-runtime.ps1  # lightweight fake-dsh fixture for shell debugging
 
 pnpm tauri dev
@@ -60,7 +64,7 @@ pnpm tauri dev
 Tests and checks:
 
 ```bash
-cd src-tauri && cargo test     # Rust unit and integration tests (30)
+cd src-tauri && cargo test     # Rust unit and integration tests (113)
 pnpm check && pnpm build       # frontend type check and build
 ```
 

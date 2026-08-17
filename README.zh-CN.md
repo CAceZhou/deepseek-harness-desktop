@@ -12,12 +12,16 @@
 
 - **零前置依赖。** Node.js 24 与 dsh 随安装包分发，Windows 10/11 x64 装完即用。缺少 WebView2 时安装程序会自动安装。
 - **原生窗口中的官方界面。** 在空闲回环端口拉起 `dsh web`，就绪后立即打开官方 Web UI。
+- **手机远程访问。** 托盘菜单一键开启：内嵌 cloudflared 建立 Cloudflare Quick Tunnel，壳内嵌 token 门岗代理鉴权；手机扫码即获得完整 dsh Web UI。随机 token 每次开启重新生成、停止即失效——无需服务器、账号或任何配置。
 - **引导式首次启动。** 首次初始化时，分阶段进度条展示运行时准备、服务启动与就绪进度。
-- **托盘常驻。** 关窗隐藏到托盘。托盘菜单：打开主界面、诊断、重启服务、退出。
-- **原生通知。** 窗口隐藏时，dsh 的批准请求与提问转为 Windows 通知。
+- **托盘常驻。** 关窗隐藏到托盘（可在设置改为直接退出）。托盘菜单：打开主界面、诊断、技能管理、MCP 管理、远程访问、重启服务、其它设置、退出。
+- **原生通知。** 窗口隐藏时，dsh 的批准请求与提问转为 Windows 通知；回合完成也可通知，支持内置提示音。
+- **技能与 MCP 管理。** 技能启停/删除（dsh watcher 热刷新），支持从 codex/claude/opencode 导入；在线编辑 dsh 的 MCP 服务条目，热生效无需重启。
 - **崩溃自愈。** dsh 进程受监督，崩溃后按指数退避自动重启。
-- **主题跟随。** 标题栏实时跟随 dsh 的浅色、深色或跟随系统设置。
-- **诊断面板。** 服务状态、端口、PID、实时日志、一键重启与开机自启开关。
+- **主题与语言跟随。** 标题栏与壳本地页面跟随 dsh 的浅色/深色/系统主题；托盘菜单与本地页面跟随 dsh 的界面语言（中/英）。
+- **诊断面板。** 服务状态、端口、PID、实时日志、远程访问状态、一键重启与开机自启开关。
+- **设置窗口。** 缩放步进与快捷键、关窗行为、完成通知开关与提示音。
+- **窗口几何记忆。** 尺寸与位置在下次启动时恢复。
 - **单实例。** 重复启动只会聚焦已有窗口。
 
 ## 下载与安装
@@ -41,7 +45,7 @@ Rust 核心：运行时 / 进程监督 / 托盘 / 通知 / 主题 / 诊断
 内嵌 node.exe + dsh web --port <空闲端口>（仅绑 127.0.0.1）
 ```
 
-dsh 事件（批准请求、提问）通过其 WebSocket 通道 `/api/events.mux` 订阅。平台相关代码全部收敛在 `Platform` trait 后面，为 macOS 与 Linux 预留了空间。详见 [设计文档](docs/design.zh-CN.md)。
+dsh 事件（批准请求、提问）通过其 WebSocket 通道 `/api/events.mux` 订阅。开启远程访问后链路多一跳：手机 → Cloudflare 边缘 → cloudflared（纯出站）→ 壳的 token 门岗代理（127.0.0.1）→ dsh。平台相关代码全部收敛在 `Platform` trait 后面，为 macOS 与 Linux 预留了空间。详见 [设计文档](docs/design.zh-CN.md)。
 
 ## 从源码构建
 
@@ -51,7 +55,7 @@ dsh 事件（批准请求、提问）通过其 WebSocket 通道 `/api/events.mux
 pnpm install
 
 # 准备内嵌运行时（二选一）
-powershell -File scripts/fetch-runtime.ps1        # 真实运行时（Node 24 + dsh 0.1.0-rc.6）
+powershell -File scripts/fetch-runtime.ps1        # 真实运行时（Node 24 + dsh 0.1.0-rc.6 + cloudflared）
 powershell -File scripts/use-fixture-runtime.ps1  # 轻量 fake-dsh fixture，供壳调试
 
 pnpm tauri dev
@@ -60,7 +64,7 @@ pnpm tauri dev
 测试与检查：
 
 ```bash
-cd src-tauri && cargo test     # Rust 单元与集成测试（30 个）
+cd src-tauri && cargo test     # Rust 单元与集成测试（113 个）
 pnpm check && pnpm build       # 前端类型检查与构建
 ```
 

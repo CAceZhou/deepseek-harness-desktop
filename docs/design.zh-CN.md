@@ -45,6 +45,9 @@ dsh 本身提供 `dsh web` 命令：在本机 127.0.0.1 上启动一个 Web UI �
 │  tray.rs     托盘菜单；diagnostics.rs 状态/日志；commands.rs 基础命令     │
 │  zoom.rs     UI 缩放：可配置步进（默认 2%）、快捷键钩子注入、持久化        │
 │  settings.rs 壳设置：settings.json 模型/校验/持久化 + get/set/试听命令      │
+│  skills.rs   技能管理：skills/ ↔ skills-disabled/ 移动开关 + 三源导入      │
+│  mcp.rs      MCP 管理：cordis.patch.yml 条目读写/启停 + 三源导入           │
+│  remote/     远程访问：token 门岗反向代理 + cloudflared 隧道监督            │
 │  platform/   Platform trait（windows.rs 实现；macos/linux 为编译期占位）   │
 └──────────────────────────────────┬───────────────────────────────────────┘
                                    │ spawn（CREATE_NO_WINDOW，DSH_HOME 隔离）
@@ -169,15 +172,16 @@ dsh WS /api/events.host ─▶ WsSource(host) ─▶ handle_host_frame ─▶ Se
 - `#/settings` **Settings.svelte**：其它设置（开机自启、关窗行为单选、任务完成通知开关+提示音、缩放步进 1%–25%、放大/缩小快捷键录制器）。保存时前端先校验（至少一个修饰键、in/out 不冲突），再 `invoke('set_shell_settings', { next })` 由 Rust 端复验并落盘。
 - `#/skills` **Skills.svelte**：技能管理。数据源是**壳注入给 dsh 的 DSH_HOME**（`<runtime_base>/dsh-home`，不是 `~/.dsh`）：`skills/` 为启用、旁路 `skills-disabled/` 为停用（dsh 的技能发现只认根目录直属条目、无原生禁用概念；移出根目录即停用，watcher 观察到变化后热刷新 catalog，无需重启）。导入从三个外部 agent 的用户级源复制目录：Codex `~/.codex/skills`、Claude Code `~/.claude/skills`、OpenCode `~/.config/opencode/skills`；同名冲突逐个选覆盖/跳过（覆盖会同时清掉禁用目录里的旧副本）。**独立 dsh 的默认目录 `~/.dsh/skills` 不作为导入源**——壳就是 dsh，启动时自动扫描它并补入新技能（`skills::seed_from_default_dsh_home`；`.skills-seeded` marker 记录已见名字，壳里删掉的不会复活）。删除只删 home 内副本，不动源目录。Rust 侧 `skills.rs` 的 frontmatter 解析只取 description 单行键，行上操作均以目录名为准。
 - `#/mcp` **Mcp.svelte**：MCP server 管理（列表/启停/删除/新增/编辑 + 导入）。dsh 没有独立的 mcp.json——MCP server 是 Cordis 插件补丁，壳读写 `<dsh-home>/profiles/web/cordis.patch.yml` 中 `name == '@deepseek-ai/dsh-mcp-client'` 的 insert 条目（只动这些条目，其余 Value 级保留；tmp+rename 原子写；读前剥 BOM）。dsh 的 HMR（`watchUserPatches` + chokidar）监听该文件，改后自动 disconnect+reconnect，**无需重启**。启停 = entry 上加/去 `disabled: true`（cordis-plugin-loader 原生语义，disabled 的 entry 不起 fiber）。编辑以旧 config 为底、只覆盖表单字段，`toolCallTimeoutMs`/`reconnect.*` 等高级键保留；transport 只有 `stdio`（command/args/env/cwd）与 `streamable-http`（url/headers）两种，sse 不支持。启动时种子同步 `~/.dsh` 两层 patch 里的 MCP 条目（`mcp::seed_from_default_dsh_home`，`.mcp-seeded` marker 防复活；源里 disabled 的不同步也不记 marker，日后在 ~/.dsh 启用时仍能进来）。手动导入三源：Claude Code `~/.claude.json` 的 `mcpServers`（stdio/http 映射，sse 标记"不支持"跳过）、Codex `~/.codex/config.toml` 的 `[mcp_servers.*]`（`enabled=false` 不列出）、OpenCode `~/.config/opencode/opencode.json` 的 `mcp` 段（local/remote 映射）；冲突逐个覆盖/跳过。patch 文件解析失败（如含无法处理的语法）时页面降级为只读并提示手工编辑。
+- `#/remote` **Remote.svelte**：远程访问。状态取 `get_remote_status` 快照并订阅 `remote-status` 事件；Up 态显示二维码（`get_remote_qr` 返回 SVG）与完整链接，链接变化（隧道重连换域名）自动重取二维码；开关按钮按当前 phase 调 `start_remote` / `stop_remote`。
 
 窗口行为：
 
 - 主窗口 `main`：**关窗行为可配置**（settings.json 的 `close_behavior`）：默认 `background` = 隐藏到托盘（`CloseRequested` 时 `prevent_close` + `hide`），`quit` = 走托盘"退出"同一流程直接退出程序；托盘"打开主界面"或二次启动（单实例插件）时 `show` + `unminimize` + `set_focus`。
-- 诊断窗口 `diagnostics`、设置窗口 `settings`、技能窗口 `skills`、MCP 窗口 `mcp`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
-- 托盘"退出"：先 `stop()` dsh，等 1.5s 让监督循环杀完进程树，再 `exit(0)`。
+- 诊断窗口 `diagnostics`、设置窗口 `settings`、技能窗口 `skills`、MCP 窗口 `mcp`、远程访问窗口 `remote`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
+- 托盘"退出"：先 `stop()` 远程访问（杀 cloudflared 进程树 + 关停鉴权代理，链接即刻失效），再 `stop()` dsh，等 1.5s 让监督循环杀完进程树，最后 `exit(0)`。
 - 导航到远程 URL 后窗口标题被 dsh 的 `document.title` 覆盖——**外部脚本不要按标题找窗口**（按 PID + 类名，见 `scripts/shot-window.ps1`）。
 
-IPC 命令：commands.rs 8 个——`get_shell_ui_state` / `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`（共 23 个，见下）。
+IPC 命令：commands.rs 8 个——`get_shell_ui_state` / `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`、remote/mod.rs 的 `start_remote` / `stop_remote` / `get_remote_status` / `copy_remote_link` / `get_remote_qr`（共 28 个，见下）。
 
 壳设置（settings.rs）：
 
@@ -245,7 +249,7 @@ scripts/fetch-runtime.ps1
 
 | 层 | 内容 | 命令 |
 | --- | --- | --- |
-| Rust 单元测试（94） | runtime 部署/回退/路径归一化/复制进度回调、progress 阶段权重与百分比映射、theme BOM 解析与首启播种、notify 帧分类/子代理台账/摘要、LogRing 淘汰、port 分配与就绪探测、platform 基础、zoom clamp/持久化/钩子脚本内嵌设置、settings 模型/校验/持久化/提示音枚举、skills frontmatter 解析/列表/启停/删除/导入冲突、mcp patch 解析/启停/删除/upsert 校验与高级键保留/种子 marker/三源解析与导入冲突、remote 隧道 URL 解析 | `cd src-tauri && cargo test` |
+| Rust 单元测试（95） | runtime 部署/回退/路径归一化/复制进度回调、progress 阶段权重与百分比映射、theme BOM 解析与首启播种、notify 帧分类/子代理台账/摘要、LogRing 淘汰、port 分配与就绪探测、platform 基础、zoom clamp/持久化/钩子脚本内嵌设置、settings 模型/校验/持久化/提示音枚举、skills frontmatter 解析/列表/启停/删除/导入冲突、mcp patch 解析/启停/删除/upsert 校验与高级键保留/种子 marker/三源解析与导入冲突、remote 隧道 URL 解析与 token 脱敏 | `cd src-tauri && cargo test` |
 | 进程集成测试（2，tests/process.rs） | 用 `tests/fixtures/fake-dsh.cjs`（可脚本化崩溃的假 dsh）验证 就绪→HTTP 200→stop、崩溃→自动重启→二次 Ready | 同上 |
 | 通知集成测试（2，tests/notify_ws.rs） | fixture 双 WS 端点发事件帧，验证 approval 过滤、turn/end 完成通知（含标题）、子代理过滤 | 同上 |
 | 远程访问集成测试（12，tests/remote_{proxy,tunnel,manager}.rs） | 门岗 403/302/cookie/转发/浏览器标记头剥离（防 dsh 信任栅栏 403）/WS 桥接/503/停服释放端口、fake-cloudflared URL 解析与崩溃重启、manager 全链路（缺文件 error、up→stop、start 幂等） | 同上 |
