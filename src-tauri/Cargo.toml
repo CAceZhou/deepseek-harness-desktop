@@ -33,6 +33,8 @@ serde_yaml = "0.9"
 toml = "0.8"
 axum = { version = "0.8", features = ["ws"] }
 rand = "0.8"
+qrcode = "0.14"
+arboard = "3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

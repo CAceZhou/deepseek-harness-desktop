@@ -4,6 +4,7 @@
   import Settings from './settings/Settings.svelte'
   import Skills from './skills/Skills.svelte'
   import Mcp from './mcp/Mcp.svelte'
+  import Remote from './remote/Remote.svelte'
 
   let route = $state(window.location.hash)
   window.addEventListener('hashchange', () => {
@@ -19,6 +20,8 @@
   <Skills />
 {:else if route.startsWith('#/mcp')}
   <Mcp />
+{:else if route.startsWith('#/remote')}
+  <Remote />
 {:else}
   <Splash />
 {/if}

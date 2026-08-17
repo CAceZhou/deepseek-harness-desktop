@@ -76,6 +76,11 @@ pub fn run() {
             mcp::delete_mcp_server,
             mcp::list_mcp_import_sources,
             mcp::import_mcp_servers,
+            remote::start_remote,
+            remote::stop_remote,
+            remote::get_remote_status,
+            remote::copy_remote_link,
+            remote::get_remote_qr,
         ])
         .on_page_load(|webview, payload| {
             if !matches!(
@@ -87,7 +92,10 @@ pub fn run() {
             // 设置/诊断窗口创建时是隐藏的（防白闪），首帧加载完成后显示并聚焦。
             // 注意此处回调参数是 &Webview：show() 只控制 webview 控件可见性，
             // 必须经 .window() 拿到 Window 才能把窗口本身显示出来
-            if matches!(webview.label(), "settings" | "diagnostics" | "skills" | "mcp") {
+            if matches!(
+                webview.label(),
+                "settings" | "diagnostics" | "skills" | "mcp" | "remote"
+            ) {
                 let _ = webview.window().show();
                 let _ = webview.window().set_focus();
                 return;
@@ -217,7 +225,7 @@ pub fn run() {
                         reconnect_book.lock().unwrap().clear_subagents();
                     })),
                 })
-                .run(sink, port_rx),
+                .run(sink, port_rx.clone()),
             );
 
             let source = std::env::var_os("DSHDESKTOP_RUNTIME_DIR")
@@ -291,6 +299,15 @@ pub fn run() {
             theme::spawn_theme_follower(&handle, platform.clone(), paths.home.clone());
             let emit_handle = handle.clone();
             let nav_home = home_url.clone();
+            // 远程访问用的运行时信息（paths 随后被 SharedState 取走，先克隆出来）
+            let cloudflared_exe = paths.cloudflared_exe.clone();
+            let remote_work_dir = paths.work_dir.clone();
+            let remote_log = paths
+                .home
+                .parent()
+                .map(|p| p.join("events.log"))
+                .unwrap_or_else(|| PathBuf::from("events.log"));
+            let remote_handle = handle.clone();
             // 事件调试日志：诊断面板之外的最后手段（面板本身依赖应用内交互才能看到）
             let debug_log = paths
                 .home
@@ -317,6 +334,55 @@ pub fn run() {
                 home_url,
                 first_launch,
             });
+            // 远程访问管理器：托盘/命令驱动 start/stop；状态变更广播给前端并记事件日志
+            handle.manage(remote::RemoteManager::new(
+                platform.clone(),
+                cloudflared_exe,
+                vec![],
+                remote_work_dir,
+                port_rx,
+                Box::new(move |ev| match ev {
+                    // 链接即凭据：日志只记非敏感字段，隧道输出过 token 脱敏
+                    remote::RemoteEvent::Log(l) => {
+                        append_debug_line(&remote_log, &remote::redact_token(&l))
+                    }
+                    remote::RemoteEvent::Status(st) => {
+                        append_debug_line(
+                            &remote_log,
+                            &format!(
+                                "Remote: phase={} url={:?} error={:?} proxy_port={:?}",
+                                st.phase, st.url, st.error, st.proxy_port
+                            ),
+                        );
+                        tray::update_remote_items(&remote_handle, &st.phase);
+                        // Up/Error 给 toast（其余状态变化是中间态，不打扰）；
+                        // toast 会留在系统通知中心，正文不带链接，只提示去托盘复制
+                        match st.phase.as_str() {
+                            "up" => {
+                                let _ = remote_handle
+                                    .notification()
+                                    .builder()
+                                    .title(i18n::pick("远程访问已开启", "Remote access is on"))
+                                    .body(i18n::pick(
+                                        "链接已就绪，请从托盘菜单复制",
+                                        "Link ready — copy it from the tray menu",
+                                    ))
+                                    .show();
+                            }
+                            "error" => {
+                                let _ = remote_handle
+                                    .notification()
+                                    .builder()
+                                    .title(i18n::pick("远程访问开启失败", "Remote access failed"))
+                                    .body(st.error.clone().unwrap_or_default())
+                                    .show();
+                            }
+                            _ => {}
+                        }
+                        let _ = remote_handle.emit("remote-status", st);
+                    }
+                }),
+            ));
             Ok(())
         })
         .on_window_event(|window, event| {

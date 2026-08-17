@@ -29,6 +29,11 @@ fn main() {
                 "delete_mcp_server",
                 "list_mcp_import_sources",
                 "import_mcp_servers",
+                "start_remote",
+                "stop_remote",
+                "get_remote_status",
+                "copy_remote_link",
+                "get_remote_qr",
             ]),
         ),
     )

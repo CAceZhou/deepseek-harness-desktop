@@ -254,9 +254,10 @@ Result: staging 344 to 227.9 MB; installer **45.2 MB**; installed **241.8 MB** (
 
 | Layer | Coverage | Command |
 | --- | --- | --- |
-| Rust unit tests (88) | runtime deploy/fallback/path normalization/copy-progress callback, progress stage weights & percent mapping, theme BOM parsing & first-launch seeding, notify frame classification/subagent book/summary, LogRing eviction, port allocation & readiness, platform basics, zoom clamp/persistence/hook embeds settings, settings model/validation/persistence/sound enum, skills frontmatter parsing/list/toggle/delete/import conflicts, mcp patch parsing/toggle/delete/upsert validation & advanced-key preservation/seed marker/three-source parsing & import conflicts | `cd src-tauri && cargo test` |
+| Rust unit tests (94) | runtime deploy/fallback/path normalization/copy-progress callback, progress stage weights & percent mapping, theme BOM parsing & first-launch seeding, notify frame classification/subagent book/summary, LogRing eviction, port allocation & readiness, platform basics, zoom clamp/persistence/hook embeds settings, settings model/validation/persistence/sound enum, skills frontmatter parsing/list/toggle/delete/import conflicts, mcp patch parsing/toggle/delete/upsert validation & advanced-key preservation/seed marker/three-source parsing & import conflicts, remote tunnel-URL parsing | `cd src-tauri && cargo test` |
 | Process integration (2, tests/process.rs) | with `tests/fixtures/fake-dsh.cjs` (a scriptable-crash fake dsh): ready→HTTP 200→stop, and crash→auto-restart→second Ready | same |
 | Notification integration (2, tests/notify_ws.rs) | the fixture serves both WS endpoints; verifies approval filtering, turn/end completion notifications (with title), and subagent filtering | same |
+| Remote access integration (12, tests/remote_{proxy,tunnel,manager}.rs) | gate 403/302/cookie/forward/browser-marker-header stripping (avoids dsh trust-fence 403)/WS-bridge/503/shutdown-releases-port, fake-cloudflared URL parsing & crash-restart, manager full chain (missing-exe error, up→stop, idempotent start) | same |
 | Console-window regression (2, tests/console_window.rs) | positive: a CREATE_NO_WINDOW child has **no visible** ConsoleWindowClass window; control: a CREATE_NEW_CONSOLE child **has one** (proves the detector works; a real console window briefly flashes on screen, which is expected) | same |
 | End-to-end acceptance (scripts/acceptance.ps1) | uninstall old → silent install → launch → wait for dsh ready → single-instance / no visible console / theme / screenshots | `powershell -File scripts/acceptance.ps1 -SetupExe <exe>` |
 
@@ -313,3 +314,29 @@ Contract breaks mostly surface in `cargo test` (WS notification integration, the
 | Settings file | `$DSH_HOME/settings.yaml` → `ui-theme.preference: light\|dark\|system` |
 | Trust fence | allows loopback + Origin-less WS connections |
 | License | MIT (Copyright 2026 DeepSeek) |
+
+## 16. Remote access (Quick Tunnel + embedded auth proxy)
+
+One click on the tray "Remote access" item gives a phone/remote browser the **full dsh Web UI** via a token-bearing link. No server, no account, no configuration: the relay is Cloudflare's free Quick Tunnel (`cloudflared.exe` bundled in the runtime; anonymous ephemeral tunnel, outbound-only — no public IP, port mapping, or firewall pinhole).
+
+**Chain**:
+
+```
+phone browser —HTTPS→ Cloudflare edge → cloudflared (desktop, outbound-only)
+  → 127.0.0.1:<random port> remote::proxy (token gate)
+  → 127.0.0.1:<dsh port>  dsh web (HTTP + /api/events.* WS)
+```
+
+**Modules** (`src-tauri/src/remote/`):
+
+- `mod.rs` — `RemoteManager`: lifecycle (start/stop/status), token generation (fresh 256-bit hex on every start), 5 invoke commands (start_remote/stop_remote/get_remote_status/copy_remote_link/get_remote_qr). Tunnel events compose `link = {url}/?token={token}`; status changes broadcast `remote-status`, update tray submenu enabled states, and append to events.log.
+- `proxy.rs` — axum reverse proxy bound to 127.0.0.1 only. Auth: a valid `__dsh_remote` cookie forwards directly; a matching `?token=` (constant-time compare) → 302 that strips the token + sets an HttpOnly cookie; a mismatched token → fixed 500ms delay then 403; no credentials → 403 gate page. HTTP forwards via reqwest streaming (3xx passed through, never followed); WS upgrades are terminated at the proxy then re-established to dsh with frame-level bidirectional bridging. The dsh port is read from a `watch::Receiver`, so dsh restarts don't break the proxy. **Browser-marker headers must be stripped when forwarding** (`origin`/`referer`/`sec-fetch-*`): dsh's /api trust fence (dsh-client-connection `isTrustedApiRequest`) requires Origin.host == Host header and rejects `sec-fetch-site: cross-site`; through the tunnel the Origin is the trycloudflare domain, so every RPC call from the page would 403. Stripped, the request looks like an Origin-less loopback client to dsh (the WS bridge side already sends no Origin in the tungstenite handshake, so it passes natively). **The forwarding client must use `.no_proxy()`** — otherwise a user-level system proxy (e.g. Clash) hijacks the 127.0.0.1 forwarding.
+- `tunnel.rs` — `TunnelProcess` supervision (mirrors DshProcess): `cloudflared tunnel --url <proxy addr> --no-autoupdate`; parses `https://<rand>.trycloudflare.com` from stdout with a regex (failure if unseen within 60s), exponential-backoff restarts (after a reconnect the **domain changes, token stays**), stop via `kill_process_tree` + `kill_on_drop`.
+
+**Security model**: the link is the credential (tray/QR page warn "do not share"); the token regenerates on every start, and stopping remote access or quitting the app invalidates it immediately (quit order: stop remote first, then dsh). Neither the proxy nor dsh listens on non-loopback. **The token never touches logs**: events.log records only phase/url/error/proxy_port (never the link), `?token=` query strings in cloudflared output are redacted via `redact_token`, and the up-toast body omits the link (system notification center keeps history) — it just points to the tray menu. Known trade-off: links are not stable — phones cannot bookmark them (each start requires a fresh scan), in exchange for the shortest possible leak window.
+
+**Distribution**: `fetch-runtime.ps1 -CloudflaredVersion` downloads `cloudflared-windows-amd64.exe` from GitHub releases (ghproxy fallback) into `runtime/<triplet>/cloudflared.exe`, riding the existing `resources: ["runtime"]` bundling and `.version` deploy comparison; a missing binary makes start report the error state (the dev fixture runtime is allowed to lack it).
+
+**UI**: tray submenu (start/stop mutually exclusive enabled, copy link, show QR) + the `#/remote` local window (QR SVG generated by the `qrcode` crate, copy button, toggle) + a "remote access" status row in the diagnostics panel. After a locale-switch tray-menu rebuild, the `TrayRemoteItems` handles are replaced and enabled states re-applied from the current phase.
+
+**Tests**: `tests/remote_proxy.rs` (gate 403/302/cookie/forward/WS bridge/503/shutdown releases the port), `tests/remote_tunnel.rs` (fake-cloudflared.cjs: URL parsing, crash restart, stop), `tests/remote_manager.rs` (missing cloudflared → error; fixture dsh + fake tunnel full chain up→stop). The real-tunnel path is not automated (needs outbound internet); manual acceptance: start from tray → scan on phone → drive dsh end-to-end.

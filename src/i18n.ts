@@ -53,6 +53,20 @@ const en: Record<string, string> = {
   '快捷键必须包含 Ctrl/Shift/Alt 中至少一个修饰键': 'shortcut must include at least one modifier (Ctrl/Shift/Alt)',
   '放大与缩小快捷键不能相同': 'Zoom in and zoom out shortcuts must differ',
 
+  // 远程访问
+  '远程访问': 'Remote Access',
+  '未开启': 'Off',
+  '远程访问未开启': 'Remote access is off',
+  '开启远程访问': 'Start remote access',
+  '关闭远程访问': 'Stop remote access',
+  '正在开启远程访问…': 'Starting remote access…',
+  '首次开启需要几秒钟建立隧道': 'The first start takes a few seconds to establish the tunnel',
+  '用手机扫码或复制链接打开': 'Scan with your phone or copy the link',
+  '复制链接': 'Copy link',
+  '已复制': 'Copied',
+  '链接即凭据，请勿分享给他人': 'The link is the credential — do not share it',
+  '每次开启都会生成新链接，旧链接即刻失效': 'Each start generates a new link; old links stop working',
+
   // 技能管理
   '技能管理': 'Skills',
   '从外部 Agent 导入': 'Import from external agents',

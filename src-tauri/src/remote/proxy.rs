@@ -41,12 +41,15 @@ struct ProxyState {
 pub struct ProxyHandle {
     pub port: u16,
     stop: Arc<Notify>,
+    stopped: Arc<Notify>,
 }
 
 impl ProxyHandle {
-    /// 优雅停服（消费自身；句柄不可复用）
-    pub fn shutdown(self) {
+    /// 优雅停服并等待监听器与空闲连接关闭（消费自身；句柄不可复用）。
+    /// hyper 的 graceful shutdown 会立即关闭空闲 keep-alive 连接，只等在途请求。
+    pub async fn shutdown(self) {
         self.stop.notify_one();
+        self.stopped.notified().await;
     }
 }
 
@@ -58,13 +61,18 @@ pub async fn spawn_proxy(
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let port = listener.local_addr()?.port();
     let stop = Arc::new(Notify::new());
+    let stopped = Arc::new(Notify::new());
     let stop2 = stop.clone();
+    let stopped2 = stopped.clone();
     let state = ProxyState {
         token,
         dsh_port,
         client: reqwest::Client::builder()
             // 3xx 原样透传给浏览器，不由代理代为跟随
             .redirect(reqwest::redirect::Policy::none())
+            // 转发目标是本机 127.0.0.1 的 dsh：必须绕开系统代理（HTTP_PROXY 等），
+            // 否则用户开了系统代理时转发会被劫持到代理软件上
+            .no_proxy()
             .build()
             .expect("reqwest client"),
     };
@@ -76,8 +84,13 @@ pub async fn spawn_proxy(
             })
             .await
             .ok();
+        stopped2.notify_one();
     });
-    Ok(ProxyHandle { port, stop })
+    Ok(ProxyHandle {
+        port,
+        stop,
+        stopped,
+    })
 }
 
 async fn handler(State(st): State<ProxyState>, req: Request) -> Response {
@@ -134,21 +147,45 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
     let url = format!("http://127.0.0.1:{port}{path_and_query}");
     let mut out = st.client.request(req.method().clone(), &url);
     for (name, value) in req.headers() {
-        // host/content-length 由 reqwest 按目标与 body 重算；逐跳头不透传
+        // host/content-length 由 reqwest 按目标与 body 重算；逐跳头不透传。
+        // origin/referer/sec-fetch-* 必须剥掉：dsh 有浏览器信任栅栏
+        // （dsh-client-connection isTrustedApiRequest），Origin.host ≠ Host 头
+        // 或 sec-fetch-site: cross-site 的 /api 请求一律 403。经隧道访问时浏览器
+        // 带的是 trycloudflare 域名的 Origin，不剥则页面所有 RPC 调用全灭。
+        // 剥掉后请求在 dsh 眼里是无 Origin 的 loopback 客户端，合法放行。
         if matches!(
             name.as_str(),
-            "host" | "connection" | "content-length" | "transfer-encoding" | "upgrade"
+            "host"
+                | "connection"
+                | "content-length"
+                | "transfer-encoding"
+                | "upgrade"
+                | "keep-alive"
+                | "te"
+                | "trailer"
+                | "proxy-authorization"
+                | "origin"
+                | "referer"
+                | "sec-fetch-site"
+                | "sec-fetch-mode"
+                | "sec-fetch-dest"
+                | "sec-fetch-user"
         ) {
             continue;
         }
         out = out.header(name, value);
     }
-    let out = out.body(reqwest::Body::wrap_stream(req.into_body().into_data_stream()));
+    let out = out.body(reqwest::Body::wrap_stream(
+        req.into_body().into_data_stream(),
+    ));
     match out.send().await {
         Ok(res) => {
             let mut builder = Response::builder().status(res.status());
             for (name, value) in res.headers() {
-                if matches!(name.as_str(), "connection" | "transfer-encoding") {
+                if matches!(
+                    name.as_str(),
+                    "connection" | "transfer-encoding" | "keep-alive" | "upgrade"
+                ) {
                     continue;
                 }
                 builder = builder.header(name, value);
@@ -238,7 +275,11 @@ fn to_client(msg: DshMessage) -> Option<Message> {
 }
 
 fn gate() -> Response {
-    (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], GATE_HTML)
+    (
+        StatusCode::FORBIDDEN,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        GATE_HTML,
+    )
         .into_response()
 }
 

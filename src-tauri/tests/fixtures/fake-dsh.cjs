@@ -9,6 +9,21 @@ const crypto = require('node:crypto')
 const portIdx = process.argv.indexOf('--port')
 const port = Number(process.argv[portIdx + 1] || 3080)
 
+// 模拟真实 dsh 的浏览器信任栅栏（dsh-client-connection isTrustedApiRequest）：
+// /api/* 请求若 sec-fetch-site: cross-site，或 Origin 的 host 与 Host 头不一致 → 403。
+// 远程代理若不剥这些浏览器标记头，RPC 调用会全部 403。
+function fencePass(req) {
+  if (!req.headers.host) return false
+  if (req.headers['sec-fetch-site'] === 'cross-site') return false
+  const origin = req.headers.origin
+  if (origin === undefined) return true
+  try {
+    return new URL(origin).host === req.headers.host
+  } catch {
+    return false
+  }
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === '/api/events.mux' || req.url === '/api/events.host') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
@@ -24,6 +39,16 @@ const server = http.createServer((req, res) => {
       clearInterval(timer)
       clearInterval(notifier)
     })
+    return
+  }
+  if (req.url.startsWith('/api/')) {
+    if (!fencePass(req)) {
+      res.writeHead(403, { 'content-type': 'text/plain' })
+      res.end('forbidden')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"ok":true}')
     return
   }
   res.writeHead(200, { 'content-type': 'text/plain' })

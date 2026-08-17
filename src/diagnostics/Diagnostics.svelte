@@ -5,8 +5,10 @@
   import { t } from '../i18n'
 
   type Status = { state: string; port: number | null; pid: number | null; version: string }
+  type Remote = { phase: string; url: string | null; error: string | null }
 
   let status = $state<Status | null>(null)
+  let remote = $state<Remote | null>(null)
   let logs = $state<string[]>([])
   let restarting = $state(false)
   let logEl: HTMLPreElement | undefined = $state()
@@ -23,8 +25,21 @@
             : t('失败'),
   )
 
+  let remoteText = $derived(
+    !remote
+      ? '…'
+      : remote.phase === 'up'
+        ? (remote.url ?? t('运行中'))
+        : remote.phase === 'starting'
+          ? t('启动中')
+          : remote.phase === 'error'
+            ? (remote.error ?? t('失败'))
+            : t('未开启'),
+  )
+
   async function refresh() {
     status = await invoke<Status>('get_status')
+    remote = await invoke<Remote>('get_remote_status')
   }
 
   async function restart() {
@@ -70,6 +85,7 @@
     <div class="row"><span>{t('版本')}</span><b>{status?.version ?? '…'}</b></div>
     <div class="row"><span>{t('端口')}</span><b>{status?.port ?? '—'}</b></div>
     <div class="row"><span>{t('进程 PID')}</span><b>{status?.pid ?? '—'}</b></div>
+    <div class="row"><span>{t('远程访问')}</span><b class:bad={remote?.phase === 'error'}>{remoteText}</b></div>
     {#if status && status.state.startsWith('Failed')}
       <div class="row"><span>{t('错误')}</span><b class="bad">{status.state}</b></div>
     {/if}
