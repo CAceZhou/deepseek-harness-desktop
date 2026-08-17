@@ -187,13 +187,13 @@ impl ShellSettings {
         s
     }
 
-    /// 写盘失败只丢持久化，内存状态已生效（下次启动回退旧值），与 ui-zoom.txt 同策略
-    pub fn save(&self, dir: &Path) {
-        let _ = std::fs::create_dir_all(dir).and_then(|_| {
-            serde_json::to_string_pretty(self)
-                .map_err(|e| e.into())
-                .and_then(|j| std::fs::write(file_path(dir), j))
-        });
+    /// 写盘失败显式上报：旧版静默吞掉（仅丢持久化），但若写盘被环境阻断
+    /// （杀软目录保护等），用户看到的是"保存成功/无关报错"而重启后设置回退，
+    /// 无法感知真正原因。失败时内存值也不替换，界面状态与磁盘保持一致。
+    pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let j = serde_json::to_string_pretty(self).map_err(std::io::Error::from)?;
+        std::fs::write(file_path(dir), j)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -220,7 +220,7 @@ impl ShellSettings {
 }
 
 /// 托管状态：内存值 + 持久化目录。set 先 clamp/校验，再落盘，最后替换内存值；
-/// 校验失败时内存与磁盘都保持旧值。
+/// 校验或落盘失败时内存与磁盘都保持旧值。
 pub struct SettingsState {
     dir: PathBuf,
     inner: Mutex<ShellSettings>,
@@ -241,7 +241,12 @@ impl SettingsState {
     pub fn set(&self, mut s: ShellSettings) -> Result<(), String> {
         s.zoom_step = s.zoom_step.clamp(STEP_MIN, STEP_MAX);
         s.validate()?;
-        s.save(&self.dir);
+        s.save(&self.dir).map_err(|e| {
+            crate::i18n::pick(
+                format!("设置写入失败: {e}"),
+                format!("Failed to write settings file: {e}"),
+            )
+        })?;
         *self.inner.lock().unwrap() = s;
         Ok(())
     }
@@ -354,7 +359,7 @@ mod tests {
         s.zoom_step = 0.03;
         s.close_behavior = CloseBehavior::Quit;
         s.zoom_in = Shortcut { ctrl: true, shift: false, alt: true, code: "KeyQ".into(), key: "q".into() };
-        s.save(dir.path());
+        s.save(dir.path()).unwrap();
         let s2 = ShellSettings::load(dir.path());
         assert!((s2.zoom_step - 0.03).abs() < 1e-9);
         assert!(matches!(s2.close_behavior, CloseBehavior::Quit));
@@ -419,7 +424,7 @@ mod tests {
         assert!(s.notify.approval.enabled, "其余类型取默认开");
         assert_eq!(s.completion_sound, CompletionSound::Sms);
         // 保存后旧字段消失、新结构落盘
-        s.save(dir.path());
+        s.save(dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(!text.contains("notify_on_completion"), "实际文件：{text}");
         assert!(text.contains(r#""turn_done""#), "实际文件：{text}");
@@ -431,7 +436,7 @@ mod tests {
         let mut s = ShellSettings::default();
         s.notify.turn_done.timing = NotifyTiming::Always;
         s.notify.approval.enabled = false;
-        s.save(dir.path());
+        s.save(dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(text.contains(r#""timing": "always""#), "实际文件：{text}");
         assert!(text.contains(r#""enabled": false"#), "实际文件：{text}");
@@ -457,7 +462,7 @@ mod tests {
         let mut s = ShellSettings::default();
         s.notify.turn_done.enabled = false;
         s.completion_sound = CompletionSound::Sms;
-        s.save(dir.path());
+        s.save(dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(text.contains(r#""completion_sound": "sms""#), "实际文件：{text}");
         let s2 = ShellSettings::load(dir.path());
@@ -509,10 +514,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut s = ShellSettings::default();
         s.completion_sound = CompletionSound::Chime;
-        s.save(dir.path());
+        s.save(dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(text.contains(r#""completion_sound": "chime""#), "实际文件：{text}");
         assert_eq!(ShellSettings::load(dir.path()).completion_sound, CompletionSound::Chime);
+    }
+
+    #[test]
+    fn save_reports_io_error_instead_of_silently_dropping() {
+        let dir = tempfile::tempdir().unwrap();
+        // 落盘目录被同名文件占用 → create_dir_all 必失败；旧版静默吞掉这个错误
+        let blocker = dir.path().join("blocked");
+        std::fs::write(&blocker, "x").unwrap();
+        assert!(ShellSettings::default().save(&blocker).is_err());
+        // set 同样透出写盘错误，且内存值不被替换
+        let st = SettingsState::new(blocker);
+        let mut s = st.get();
+        s.zoom_step = 0.05;
+        assert!(st.set(s).is_err());
+        assert!((st.get().zoom_step - 0.02).abs() < 1e-9);
     }
 
     #[test]

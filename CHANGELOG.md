@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-08-17
+
+### Fixed
+
+- Saving in Other Settings no longer fails with "系统找不到指定的文件。 (os error 2)" for users who never enabled launch-at-login. Every save calls set_autostart, and auto-launch 0.5's disable() unconditionally deletes the registry Run value — when the value doesn't exist, RegDeleteValueW returns ERROR_FILE_NOT_FOUND and the whole save reported failure. The command now compares the current state first and treats an already-reached target state as success (which also avoids rewriting the registry on every save). A regression test pins the upstream behavior so a future idempotent auto-launch release flags the workaround as removable
+- Settings write failures are now reported instead of silently swallowed: previously a blocked settings.json write (e.g. by antivirus folder protection) looked like a successful save but reverted on restart. set_shell_settings now surfaces "设置写入失败: …" and keeps the in-memory value consistent with disk
+
 ## [0.1.11] - 2026-08-17
 
 ### Added

@@ -46,6 +46,7 @@ src-tauri/src/
                     notify 三类通知规则 {enabled,timing:background|always}（旧
                     notify_on_completion 读取时迁移进 turn_done）/提示音
                     silent|default|im|mail|reminder|sms|chime|drop|mellow）、校验、
+                    落盘失败显式报错（不静默吞，防"保存成功但重启回退"）、
                     SettingsState、get/set_shell_settings + preview_completion_sound 命令
   skills.rs         技能管理：DSH_HOME(壳注入，非~/.dsh)的 skills/(启用) ↔
                     skills-disabled/(停用) 目录移动即开关（dsh watcher 热刷新）；
@@ -113,6 +114,11 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 ```
 
 ## 关键约定与坑（细节见 docs/design.zh-CN.md）
+
+- **set_autostart 不能无条件透传 disable()**：auto-launch 0.5 的 disable() 直接
+  RegDeleteValueW，Run 值不存在时返回 ERROR_FILE_NOT_FOUND——从未开过自启动的用户
+  每次保存设置都弹"系统找不到指定的文件 (os error 2)"。先 is_enabled() 比目标态，
+  已达成即 Ok（commands.rs 有锚定测试）
 
 - **dsh 事实**：Node `^22.19 || >=24`；入口 `lib/bin.js`；`dsh web` 只许绑 127.0.0.1；事件走 **WebSocket** `/api/events.mux` + `/api/events.host`（GET 返回 426），帧格式 `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定看 `session/event` 里的 `turn/end`（`data.reason.kind=="completed"`），子代理标记看 `host/session-added` 的 `origin`；设置在 `$DSH_HOME/settings.yaml` 的 `ui-theme.preference`（light/dark/system）
 - **运行时布局**：暂存 `src-tauri/runtime/<triplet>/`，tauri.conf `resources: ["runtime"]`，安装后 `<install>/runtime/<triplet>/`；`bundle.resources` 相对路径原样映射（`..` 会变 `_up_`，别用）

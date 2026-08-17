@@ -191,7 +191,8 @@ IPC 命令：commands.rs 8 个——`get_shell_ui_state` / `get_status` / `resta
 壳设置（settings.rs）：
 
 - **模型**：`settings.json` 存 `zoom_step`（0.01–0.25，越界 clamp）、`zoom_in`/`zoom_out` 快捷键（`{ctrl, shift, alt, code, key}`）、`close_behavior`（`background`/`quit`）、`notify`（`{approval, question, turn_done}` 三条 `{enabled, timing}` 规则，默认全开、仅后台时提醒；旧版 `notify_on_completion` 布尔读取时迁移进 `notify.turn_done.enabled`，保存时不再写出）、`completion_sound`（`silent`/`default`/`im`/`mail`/`reminder`/`sms`/`chime`/`drop`/`mellow`，默认 `default`）。缺失/损坏 → 全默认；部分字段缺失 → 逐字段回退默认（serde default）；校验失败（无修饰键/in-out 冲突）→ 全默认，不带坏状态跑。
-- **SettingsState**：托管内存值 + 持久化目录；`set` 先 clamp/校验再落盘再替换内存，校验失败则内存磁盘都保持旧值。
+- **SettingsState**：托管内存值 + 持久化目录；`set` 先 clamp/校验再落盘再替换内存，校验或落盘失败则内存磁盘都保持旧值（落盘失败显式报"设置写入失败： …"——静默吞掉会让用户看到保存成功/无关报错而重启后回退，无法定位环境阻断）。
+- **set_autostart 的幂等防御**：每次保存设置都会调 `set_autostart`，而 auto-launch 0.5 的 `disable()` 无条件 `RegDeleteValueW`——Run 值不存在时返回 `ERROR_FILE_NOT_FOUND`，从未开过自启动的用户每次保存都弹"系统找不到指定的文件。 (os error 2)"。命令先 `is_enabled()` 比对目标态，已达成即 Ok（顺带避免每次保存重写注册表）；commands.rs 有锚定测试钉住上游行为，上游改幂等后可简化。
 - **保存即生效**：`set_shell_settings` 成功后对主窗口重注入缩放钩子（快捷键定义内嵌在脚本里必须重注入）；步进不写死在脚本里，`zoom_ui` 调用时从设置读，改步进本来就无需重注入。
 
 UI 缩放（zoom.rs）：

@@ -1,6 +1,6 @@
 [package]
 name = "dshdesktop"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Desktop shell for deepseek-harness (dsh)"
 repository = "https://github.com/LBurny/deepseek-harness-desktop"
@@ -51,6 +51,8 @@ windows-sys = { version = "0.61", features = [
 tempfile = "3"
 
 [target.'cfg(windows)'.dev-dependencies]
+# 锚定上游 disable() 对不存在注册表值的行为（commands.rs 测试）
+auto-launch = "0.5"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

@@ -968,9 +968,10 @@ dependencies = [
 
 [[package]]
 name = "dshdesktop"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "arboard",
+ "auto-launch",
  "axum",
  "dirs 6.0.0",
  "fs_extra",

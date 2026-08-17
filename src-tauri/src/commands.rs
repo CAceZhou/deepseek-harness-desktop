@@ -48,6 +48,34 @@ pub fn get_autostart(app: AppHandle) -> bool {
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     let m = app.autolaunch();
+    // auto-launch 0.5 的 disable() 无条件 RegDeleteValueW：值不存在时返回
+    // ERROR_FILE_NOT_FOUND（用户看到"系统找不到指定的文件 (os error 2)"）。
+    // 从未开过自启动时每次保存设置都会踩到——目标态已达成即视为成功，
+    // 顺带避免每次保存都重写一遍注册表。
+    if m.is_enabled().unwrap_or(false) == enabled {
+        return Ok(());
+    }
     let r = if enabled { m.enable() } else { m.disable() };
     r.map_err(|e| e.to_string())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    /// 上游行为锚定：auto-launch 0.5 的 disable() 对不存在的 Run 值返回
+    /// os error 2（"系统找不到指定的文件"）——set_autostart 因此必须先比对
+    /// 目标态（已达成即 Ok），不能无条件透传 disable()。若上游改为幂等，
+    /// 此测试失败即提醒壳侧防御可以简化。
+    #[test]
+    fn autolaunch_disable_on_missing_value_is_file_not_found() {
+        let al = auto_launch::AutoLaunch::new(
+            "dshdesktop-never-enabled-test",
+            "C:\\nonexistent\\dshdesktop.exe",
+            &[] as &[&str],
+        );
+        let err = al.disable().unwrap_err();
+        let auto_launch::Error::Io(e) = err else {
+            panic!("期望 Io 错误，实际: {err:?}")
+        };
+        assert_eq!(e.raw_os_error(), Some(2));
+    }
 }
