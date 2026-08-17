@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-08-17
+
+### Added
+
+- Mobile UI adaptation for remote access: the token-gate proxy now injects `mobile.css` + `mobile.js` into every HTML document it forwards (breakpoint 700px, so the desktop shell window at min-width 900px never matches). Three verified breakages are fixed: the settings dialog goes full-screen with its fixed 188px nav column turned into a horizontal tab strip (content was squeezed to one character per line), the expanded sidebar becomes an overlay drawer instead of a fixed 280px grid track that crushed the main area to 110px, and the composer model selector is iconified (sparkle mask icon following the theme text color; the model itself is picked from the opened second-level menu) with the trigger menu's containing block moved up to the composer card so the popup is no longer clipped off-screen
+- New "信息" (Info) tab next to "对话/轨迹" in the conversation header: tapping it opens a full panel listing per-turn stats (turns/steps, LLM time, first-token latency and speed, cache hit rate, input/output tokens) one per row, live-synced via MutationObserver — the stats node is cloned rather than moved because React crashes on removeChild of moved nodes. The enhancement marker follows the matchMedia breakpoint so rotating to landscape restores the native stats row, and if the script can't find its anchors (upstream renames) a CSS fallback keeps the stats readable as a centered two-row wrap. All selectors anchor on semantic hooks (`role`, `data-sidebar-collapsed`) and CSS Modules local-name substrings, so upstream hash changes degrade silently to the un-adapted page
+
+### Changed
+
+- Other Settings: removed the explanatory line under the notification rules ("后台 = 本应用窗口均未聚焦…") for visual consistency
+
 ## [0.1.10] - 2026-08-17
 
 ### Fixed
