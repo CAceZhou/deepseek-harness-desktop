@@ -1,17 +1,19 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
-use tauri::{Emitter, Manager, Url};
+use tauri::{Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::watch;
 
 pub mod commands;
 pub mod diagnostics;
+pub mod download;
 pub mod i18n;
 pub mod mcp;
 pub mod notify;
 pub mod platform;
 pub mod port;
+pub mod presets;
 pub mod process;
 pub mod progress;
 pub mod remote;
@@ -125,9 +127,23 @@ pub fn run() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            let platform: Arc<dyn platform::Platform> = platform::current().into();
+            // 主窗口由代码创建（tauri.conf 的 windows 已清空）：on_download 只能挂在
+            // builder 上，conf 声明的窗口无法附加——没有它 WebView2 把 Session log 等
+            // 下载静默吞掉（wry 默认放行且抑制下载 UI，用户看不到文件去向）。
+            // 几何/标题与原 conf 一致；visible(false)+center() 语义不变，window-state
+            // 的 restore 仍在创建事件排队、早于首个可见帧（托盘按需窗口同款模式）。
+            let download_log = platform.runtime_base_dir().join("events.log");
+            WebviewWindowBuilder::new(&handle, "main", WebviewUrl::App("index.html".into()))
+                .title("DSHDesktop")
+                .inner_size(1100.0, 780.0)
+                .min_inner_size(900.0, 600.0)
+                .center()
+                .visible(false)
+                .on_download(download::handler(download_log))
+                .build()?;
             tray::setup_tray(&handle)?;
             handle.manage(diagnostics::BootstrapInfo::default());
-            let platform: Arc<dyn platform::Platform> = platform::current().into();
             handle.manage(platform.clone());
             handle.manage(zoom::ZoomState::new(platform.runtime_base_dir()));
             handle.manage(settings::SettingsState::new(platform.runtime_base_dir()));
@@ -322,6 +338,16 @@ pub fn run() {
                 .parent()
                 .map(|p| p.join("events.log"))
                 .unwrap_or_else(|| PathBuf::from("events.log"));
+            // win32：dsh rc 的极简模式预设挂载了 PTY 持久 bash（终端检查器未实现
+            // win32，每次调用必抛错）。dsh 启动前原地改写为 pwsh 变体；签名门控，
+            // 上游修复后自动停手。必须在 spawn_supervised 之前完成。
+            let preset_outcome = presets::patch_minimal_preset(&paths);
+            if preset_outcome != presets::PatchOutcome::AlreadyPatched {
+                append_debug_line(
+                    &debug_log,
+                    &format!("presets: minimal win32 patch -> {preset_outcome:?}"),
+                );
+            }
             // block_on 提供 tokio runtime 上下文，spawn_supervised 内部的 tokio::spawn 依赖它
             let proc = tauri::async_runtime::block_on(async {
                 process::DshProcess::spawn_supervised(

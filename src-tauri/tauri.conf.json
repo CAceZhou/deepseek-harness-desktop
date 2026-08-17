@@ -10,18 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "DSHDesktop",
-        "width": 1100,
-        "height": 780,
-        "minWidth": 900,
-        "minHeight": 600,
-        "visible": false,
-        "center": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

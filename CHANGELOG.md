@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- "极简模式" (minimal preset) sessions on Windows can actually run shell commands now. Upstream dsh rc.6 mounts a PTY-backed persistent bash for that preset, but `dsh-subprocess-local`'s terminal inspector only implements linux/darwin, so every call failed with "terminal inspection is unsupported on platform win32". At startup the shell rewrites the shipped preset into a PowerShell variant (`tool-pwsh` over the host-plane `pwsh-sandbox` executor, which uses plain pipe spawns) and makes the persona state the working directory explicitly — previously the fixed persona hid all runtime context, so with bash dead the model resorted to guessing `/` / `C:\` and hit Windows ACL denials. The patch is signature-gated (stops applying once upstream adds a `win32` branch) and idempotent, re-applying after dsh self-updates
+- Session log export ("Session log" button) no longer vanishes: WebView2 cancels downloads unless the host handles `DownloadStarting`, and wry's default handler allows them silently with the download UI suppressed, so files either never appeared or landed without any trace. The main window is now created in code (tauri.conf `windows` is empty) so an `on_download` handler can be attached: exports land in the system Downloads folder with ` (n)` dedup, and a toast reports the saved path or the failure. Window geometry memory and first-frame behavior are unchanged (verify-window-state / verify-no-size-flash regressions pass)
+
+- Remote sessions no longer show the internal-testing notice （内测声明） on every visit. dsh's web UI picks `memory` persistence for the acknowledgement when the page origin is not loopback, so through the Cloudflare tunnel domain the confirmation never reached `settings.yaml`. The remote-access proxy now buffers plugin bundles (`/plugins/*/client.js`, ≤4MB, identity encoding only) and rewrites the `connection.isLoopback ? "host" : "memory"` ternary to `"host"`, making remote clients share the host-persisted acknowledgement with the desktop. The rewrite fails soft — if dsh changes the wording upstream, the bundle passes through untouched and only the notice reappears
+
 ## [0.1.9] - 2026-08-17
 
 ### Added
