@@ -25,6 +25,13 @@ function fencePass(req) {
 }
 
 const server = http.createServer((req, res) => {
+  // 插件 client bundle 模拟：含 dsh 内测声明的持久化选择三元式
+  //（远程源页面用 memory → 每次访问都弹窗），供代理改写测试
+  if (req.url.startsWith('/plugins/fake/client.js')) {
+    res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' })
+    res.end('const w = new WelcomeNoticeStore(connection.api, connection.isLoopback ? "host" : "memory");\n')
+    return
+  }
   if (req.url === '/api/events.mux' || req.url === '/api/events.host') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     res.write(': connected\n\n')

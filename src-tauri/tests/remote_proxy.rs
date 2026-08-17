@@ -268,6 +268,66 @@ async fn ws_rejected_without_cookie() {
     proxy.shutdown().await;
 }
 
+/// 远程访问的页面源是隧道域名（非 loopback），dsh 的“内测声明”因此用内存
+/// 确认、每次访问都弹窗。代理把插件 bundle 里的持久化选择三元式
+/// `isLoopback ? "host" : "memory"` 改写为 `"host"`，确认落 settings.yaml。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rewrites_welcome_notice_persistence_in_plugin_bundle() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut child = spawn_fixture(dsh_port, work.path());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(r) = get_direct(&format!("http://127.0.0.1:{dsh_port}/")).await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "fixture 15s 内未就绪");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let base = format!("http://127.0.0.1:{}", proxy.port);
+    let http = client();
+
+    // 插件 bundle：三元式应被改写为 "host"
+    let r = http
+        .get(format!("{base}/plugins/fake/client.js?rev=1"))
+        .header("cookie", format!("{COOKIE_NAME}={token}"))
+        .header("accept-encoding", "gzip, br") // 浏览器常态；改写路径须剥掉求 identity
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers().get("content-encoding").is_none(),
+        "改写路径不应带压缩编码"
+    );
+    let body = r.text().await.unwrap();
+    assert!(
+        body.contains(r#"connection.api, "host""#),
+        "三元式应被改写为 \"host\"，实际：{body}"
+    );
+    assert!(
+        !body.contains("isLoopback"),
+        "改写后不应残留 isLoopback 三元式：{body}"
+    );
+
+    // 普通路径：内容原样透传不受影响
+    let r = http
+        .get(format!("{base}/"))
+        .header("cookie", format!("{COOKIE_NAME}={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.unwrap(), "ok");
+
+    let _ = child.kill();
+    proxy.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_stops_listener() {
     let (proxy, _token) = start_proxy(Some(1)).await;

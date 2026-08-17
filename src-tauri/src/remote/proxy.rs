@@ -31,6 +31,23 @@ const GATE_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><tit
 <body style=\"font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0\">\
 <p>DSHDesktop 远程访问：链接无效或已过期。<br>请在电脑托盘菜单重新生成链接。</p></body></html>";
 
+/// dsh 内测声明（WelcomeNoticeStore）的持久化选择三元式：
+/// `connection.isLoopback ? "host" : "memory"`。经隧道访问时页面源是 trycloudflare
+/// 域名（非回环），dsh 选 "memory" 持久化——确认记录不落 settings.yaml，每次连接都弹
+/// 内测声明。代理转发插件 bundle 时把该三元式改写为 "host"，远程端与桌面端共用同一份
+/// 持久化确认（桌面是回环源本来就写 host，settings.yaml 里已有记录则远程直接不再弹）。
+/// needle 须含 `connection.` 前缀，否则替换后残留 `connection."host"` 直接语法错误。
+const WELCOME_NOTICE_NEEDLE: &[u8] = br#"connection.isLoopback ? "host" : "memory""#;
+const WELCOME_NOTICE_REPL: &[u8] = br#""host""#;
+/// 只对不超过该体积的插件 bundle 做缓冲改写，超出原样透传（声明照弹，不破坏功能）
+const REWRITE_BUFFER_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// 插件客户端 bundle 路径：/plugins/<id>/client.js[?rev=N]
+fn is_plugin_client_bundle(path_and_query: &str) -> bool {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    path.starts_with("/plugins/") && path.ends_with("/client.js")
+}
+
 /// 当前有效 token 的共享单元：重置链接时原地轮换，门岗逐请求读最新值
 type TokenCell = Arc<RwLock<Arc<str>>>;
 
@@ -168,6 +185,7 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
         return (StatusCode::SERVICE_UNAVAILABLE, "dsh 未就绪").into_response();
     };
     let url = format!("http://127.0.0.1:{port}{path_and_query}");
+    let rewrite_bundle = is_plugin_client_bundle(path_and_query);
     let mut out = st.client.request(req.method().clone(), &url);
     for (name, value) in req.headers() {
         // host/content-length 由 reqwest 按目标与 body 重算；逐跳头不透传。
@@ -196,6 +214,15 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
         ) {
             continue;
         }
+        // 改写路径要求 identity 原文：剥 accept-encoding 防压缩，剥条件请求头防 304
+        if rewrite_bundle
+            && matches!(
+                name.as_str(),
+                "accept-encoding" | "if-none-match" | "if-modified-since"
+            )
+        {
+            continue;
+        }
         out = out.header(name, value);
     }
     let out = out.body(reqwest::Body::wrap_stream(
@@ -203,6 +230,14 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
     ));
     match out.send().await {
         Ok(res) => {
+            // 插件 bundle：缓冲改写内测声明持久化三元式（仅 identity + 体积上限内）
+            if rewrite_bundle
+                && res.status().is_success()
+                && res.headers().get(header::CONTENT_ENCODING).is_none()
+                && res.content_length().map_or(true, |n| n <= REWRITE_BUFFER_LIMIT)
+            {
+                return rewrite_plugin_bundle(res).await;
+            }
             let mut builder = Response::builder().status(res.status());
             for (name, value) in res.headers() {
                 if matches!(
@@ -219,6 +254,57 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
         }
         Err(_) => (StatusCode::BAD_GATEWAY, "dsh 连接失败").into_response(),
     }
+}
+
+/// 缓冲插件 bundle 响应并改写内测声明三元式。content-length/etag 作废（改写后长度与
+/// 内容都变）；needle 不存在时原样返回（dsh 改版换了写法就静默失效，声明照弹但不破坏页面）。
+async fn rewrite_plugin_bundle(res: reqwest::Response) -> Response {
+    let mut builder = Response::builder().status(res.status());
+    for (name, value) in res.headers() {
+        if matches!(
+            name.as_str(),
+            "connection" | "transfer-encoding" | "keep-alive" | "upgrade" | "content-length" | "etag"
+        ) {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    match res.bytes().await {
+        Ok(bytes) if bytes.len() as u64 <= REWRITE_BUFFER_LIMIT => {
+            let body = replace_all(&bytes, WELCOME_NOTICE_NEEDLE, WELCOME_NOTICE_REPL)
+                .unwrap_or_else(|| bytes.to_vec());
+            builder
+                .body(Body::from(body))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        // 读取失败或体积超限：改不了，502/原样都比半包强
+        Ok(bytes) => builder
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(_) => (StatusCode::BAD_GATEWAY, "dsh 连接失败").into_response(),
+    }
+}
+
+/// 字节级全量替换；needle 一次都没命中时返回 None（调用方原样透传）
+fn replace_all(haystack: &[u8], needle: &[u8], repl: &[u8]) -> Option<Vec<u8>> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(haystack.len());
+    let mut found = false;
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+        if &haystack[i..i + needle.len()] == needle {
+            out.extend_from_slice(repl);
+            i += needle.len();
+            found = true;
+        } else {
+            out.push(haystack[i]);
+            i += 1;
+        }
+    }
+    out.extend_from_slice(&haystack[i..]);
+    found.then_some(out)
 }
 
 /// WS 升级请求的握手在代理处终结（鉴权即门岗），与 dsh 另建 WS 后逐帧双向搬运；
