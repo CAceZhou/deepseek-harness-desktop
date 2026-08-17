@@ -28,7 +28,7 @@ A desktop shell for [deepseek-harness](https://github.com/deepseek-ai/deepseek-h
 
 Download `DSHDesktop_<version>_x64-setup.exe` from [Releases](../../releases) and run it. No administrator rights are required; the app installs per user.
 
-- Installed size: about 242 MB (installer about 45 MB)
+- Installed size: about 297 MB (installer about 59 MB)
 - User data lives in `%LOCALAPPDATA%\DSHDesktop\` (dsh settings, sessions, and logs)
 - Silent install: `DSHDesktop_<version>_x64-setup.exe /S` (add `/D=C:\path\to\dir` to choose the install directory)
 - To upgrade, quit the app from the tray menu or uninstall the previous version, then run the new installer

@@ -28,7 +28,7 @@
 
 从 [Releases](../../releases) 下载 `DSHDesktop_<版本>_x64-setup.exe` 并运行。无需管理员权限，按用户安装。
 
-- 安装后约 242 MB（安装包约 45 MB）
+- 安装后约 297 MB（安装包约 59 MB）
 - 用户数据在 `%LOCALAPPDATA%\DSHDesktop\`（dsh 设置、会话与日志）
 - 静默安装：`DSHDesktop_<版本>_x64-setup.exe /S`（加 `/D=C:\path\to\dir` 可指定安装目录）
 - 升级：从托盘菜单退出应用或卸载旧版，然后运行新安装包
