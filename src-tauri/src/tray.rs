@@ -246,6 +246,8 @@ fn open_diagnostics(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(app, "diagnostics", WebviewUrl::App("index.html#/diagnostics".into()))
         .title(window_title("DSHDesktop 诊断面板", "DSHDesktop Diagnostics"))
         .inner_size(900.0, 640.0)
+        // 无 window-state 记录时创建即居中；有记录时插件 restore 在创建后、可见前覆盖
+        .center()
         .visible(false)
         .build();
 }
@@ -260,6 +262,7 @@ fn open_settings(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html#/settings".into()))
         .title(window_title("DSHDesktop 设置", "DSHDesktop Settings"))
         .inner_size(760.0, 700.0)
+        .center()
         .visible(false)
         .build();
 }
@@ -274,6 +277,7 @@ fn open_skills(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(app, "skills", WebviewUrl::App("index.html#/skills".into()))
         .title(window_title("DSHDesktop 技能管理", "DSHDesktop Skills"))
         .inner_size(860.0, 640.0)
+        .center()
         .visible(false)
         .build();
 }
@@ -288,6 +292,7 @@ fn open_mcp(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(app, "mcp", WebviewUrl::App("index.html#/mcp".into()))
         .title(window_title("DSHDesktop MCP 管理", "DSHDesktop MCP Manager"))
         .inner_size(900.0, 680.0)
+        .center()
         .visible(false)
         .build();
 }
@@ -302,6 +307,7 @@ fn open_remote(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(app, "remote", WebviewUrl::App("index.html#/remote".into()))
         .title(window_title("DSHDesktop 远程访问", "DSHDesktop Remote Access"))
         .inner_size(460.0, 600.0)
+        .center()
         .visible(false)
         .build();
 }

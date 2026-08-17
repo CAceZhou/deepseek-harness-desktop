@@ -8,9 +8,11 @@ pub mod ws;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotifyKind {
-    /// 需要用户处理：approval/question（维持静音 toast，不受完成通知开关影响）
-    Attention,
-    /// 回合正常完成（可带提示音，受 notify_on_completion 开关约束）
+    /// 待批准（approval/requested）：静音 toast，按 settings.notify.approval 规则
+    Approval,
+    /// 待回答（question/requested）：静音 toast，按 settings.notify.question 规则
+    Question,
+    /// 回合正常完成（可带提示音，按 settings.notify.turn_done 规则）
     TurnCompleted,
 }
 
@@ -73,10 +75,15 @@ impl SessionBook {
 /// 先 contains 粗筛、命中才 JSON 解析——流式期间每 token 一帧，不能逢帧解析。
 pub fn handle_mux_frame(frame: &str, sink: &NotifySink, book: &Mutex<SessionBook>) {
     if ATTENTION_RE.is_match(frame) {
+        let kind = if frame.contains("approval/requested") {
+            NotifyKind::Approval
+        } else {
+            NotifyKind::Question
+        };
         sink(Notification {
             title: "DSHDesktop".into(),
             body: summarize_attention(frame),
-            kind: NotifyKind::Attention,
+            kind,
         });
         return;
     }
@@ -213,7 +220,8 @@ mod tests {
         handle_mux_frame(QUESTION, &sink, &book);
         let got = store.lock().unwrap();
         assert_eq!(got.len(), 2);
-        assert!(matches!(got[0].kind, NotifyKind::Attention));
+        assert!(matches!(got[0].kind, NotifyKind::Approval));
+        assert!(matches!(got[1].kind, NotifyKind::Question));
         assert_eq!(got[0].body, "dsh 有一个操作等待你批准");
         assert_eq!(got[1].body, "dsh 有一个问题等待你回答");
     }

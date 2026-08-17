@@ -95,7 +95,7 @@ async fn ws_source_receives_filtered_events() {
 
     let got = wait_for(&collected, Duration::from_secs(15), |list| {
         list.iter()
-            .any(|n| matches!(n.kind, NotifyKind::Attention) && n.body.contains("批准"))
+            .any(|n| matches!(n.kind, NotifyKind::Approval) && n.body.contains("批准"))
     })
     .await;
 

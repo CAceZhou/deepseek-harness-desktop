@@ -152,14 +152,12 @@ pub fn run() {
             let sink_handle = handle.clone();
             let sink_platform = platform.clone();
             let sink: NotifySink = Arc::new(move |n: Notification| {
-                // 只在主窗口隐藏（托盘态）时弹原生通知，避免打扰正在操作的用户
-                let visible = sink_handle
-                    .get_webview_window("main")
-                    .map(|w| w.is_visible().unwrap_or(true))
-                    .unwrap_or(true);
-                if visible {
-                    return;
-                }
+                // 前台 = 本应用任一窗口处于聚焦态（主窗口可见但失焦 = 用户已切走，算后台）；
+                // 各类型按自己的规则（开关 + 时机）决定是否打扰
+                let foreground = ["main", "settings", "diagnostics", "skills", "mcp", "remote"]
+                    .iter()
+                    .filter_map(|l| sink_handle.get_webview_window(l))
+                    .any(|w| w.is_focused().unwrap_or(false));
                 let settings = sink_handle
                     .try_state::<settings::SettingsState>()
                     .map(|s| s.get())
@@ -170,10 +168,19 @@ pub fn run() {
                     .title(n.title)
                     .body(n.body.clone());
                 match n.kind {
-                    // 待批准/待回答：维持静音 toast，不受完成通知开关影响
-                    notify::NotifyKind::Attention => {}
+                    // 待批准/待回答：静音 toast，各自的开关与时机
+                    notify::NotifyKind::Approval => {
+                        if !settings.notify.approval.allows(foreground) {
+                            return;
+                        }
+                    }
+                    notify::NotifyKind::Question => {
+                        if !settings.notify.question.allows(foreground) {
+                            return;
+                        }
+                    }
                     notify::NotifyKind::TurnCompleted => {
-                        if !settings.notify_on_completion {
+                        if !settings.notify.turn_done.allows(foreground) {
                             return;
                         }
                         if let Some(rel) = settings.completion_sound.custom_wav() {

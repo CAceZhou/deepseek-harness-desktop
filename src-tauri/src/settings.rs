@@ -84,6 +84,45 @@ impl CompletionSound {
     }
 }
 
+/// 通知时机：Background = 仅当应用无聚焦窗口（后台）时提醒；Always = 前台也提醒
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyTiming {
+    #[default]
+    Background,
+    Always,
+}
+
+/// 一类通知的规则：开关 + 时机
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct NotifyRule {
+    pub enabled: bool,
+    pub timing: NotifyTiming,
+}
+
+impl Default for NotifyRule {
+    fn default() -> Self {
+        Self { enabled: true, timing: NotifyTiming::Background }
+    }
+}
+
+impl NotifyRule {
+    /// foreground = 本应用任一窗口处于聚焦态
+    pub fn allows(&self, foreground: bool) -> bool {
+        self.enabled && (self.timing == NotifyTiming::Always || !foreground)
+    }
+}
+
+/// 三类通知的独立规则：待批准 / 待回答 / 回答完毕（任务完成）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct NotifySettings {
+    pub approval: NotifyRule,
+    pub question: NotifyRule,
+    pub turn_done: NotifyRule,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellSettings {
@@ -91,8 +130,11 @@ pub struct ShellSettings {
     pub zoom_in: Shortcut,
     pub zoom_out: Shortcut,
     pub close_behavior: CloseBehavior,
-    pub notify_on_completion: bool,
+    pub notify: NotifySettings,
     pub completion_sound: CompletionSound,
+    /// 旧版字段（≤0.1.7）：读取时迁移进 notify.turn_done.enabled，保存时不再写出
+    #[serde(skip_serializing)]
+    notify_on_completion: Option<bool>,
 }
 
 impl Default for ShellSettings {
@@ -114,8 +156,9 @@ impl Default for ShellSettings {
                 key: "_".into(),
             },
             close_behavior: CloseBehavior::Background,
-            notify_on_completion: true,
+            notify: NotifySettings::default(),
             completion_sound: CompletionSound::Default,
+            notify_on_completion: None,
         }
     }
 }
@@ -132,6 +175,10 @@ impl ShellSettings {
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
+        // 旧版 notify_on_completion 布尔 → notify.turn_done.enabled（其余类型默认开）
+        if let Some(b) = s.notify_on_completion.take() {
+            s.notify.turn_done.enabled = b;
+        }
         s.zoom_step = s.zoom_step.clamp(STEP_MIN, STEP_MAX);
         if s.validate().is_err() {
             // 配置文件被手改成非法（无修饰键/快捷键冲突）：回退默认，别带着坏状态跑
@@ -335,17 +382,72 @@ mod tests {
     #[test]
     fn completion_notify_defaults_on_and_sound_default() {
         let s = ShellSettings::default();
-        assert!(s.notify_on_completion);
+        assert!(s.notify.turn_done.enabled);
         assert_eq!(s.completion_sound, CompletionSound::Default);
+    }
+
+    #[test]
+    fn notify_rule_allows_matrix() {
+        let on_bg = NotifyRule { enabled: true, timing: NotifyTiming::Background };
+        let on_always = NotifyRule { enabled: true, timing: NotifyTiming::Always };
+        let off = NotifyRule { enabled: false, timing: NotifyTiming::Always };
+        assert!(on_bg.allows(false) && !on_bg.allows(true)); // 仅后台：前台不弹
+        assert!(on_always.allows(false) && on_always.allows(true)); // 总是
+        assert!(!off.allows(false) && !off.allows(true));
+    }
+
+    #[test]
+    fn notify_settings_defaults() {
+        let s = ShellSettings::default();
+        for rule in [s.notify.approval, s.notify.question, s.notify.turn_done] {
+            assert!(rule.enabled);
+            assert_eq!(rule.timing, NotifyTiming::Background);
+        }
+    }
+
+    #[test]
+    fn legacy_notify_on_completion_migrates_to_turn_done() {
+        let dir = tempfile::tempdir().unwrap();
+        // 旧版文件（≤0.1.7）：只有 notify_on_completion 布尔，没有 notify 对象
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "notify_on_completion": false, "completion_sound": "sms" }"#,
+        )
+        .unwrap();
+        let s = ShellSettings::load(dir.path());
+        assert!(!s.notify.turn_done.enabled, "旧开关值应迁移到 turn_done");
+        assert!(s.notify.approval.enabled, "其余类型取默认开");
+        assert_eq!(s.completion_sound, CompletionSound::Sms);
+        // 保存后旧字段消失、新结构落盘
+        s.save(dir.path());
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(!text.contains("notify_on_completion"), "实际文件：{text}");
+        assert!(text.contains(r#""turn_done""#), "实际文件：{text}");
+    }
+
+    #[test]
+    fn notify_rule_serde_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = ShellSettings::default();
+        s.notify.turn_done.timing = NotifyTiming::Always;
+        s.notify.approval.enabled = false;
+        s.save(dir.path());
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(text.contains(r#""timing": "always""#), "实际文件：{text}");
+        assert!(text.contains(r#""enabled": false"#), "实际文件：{text}");
+        let s2 = ShellSettings::load(dir.path());
+        assert_eq!(s2.notify.turn_done.timing, NotifyTiming::Always);
+        assert!(!s2.notify.approval.enabled);
     }
 
     #[test]
     fn old_settings_file_without_notify_fields_loads_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        // 旧版配置文件：没有 notify_on_completion / completion_sound
+        // 旧版配置文件：没有 notify / completion_sound
         std::fs::write(dir.path().join("settings.json"), r#"{ "zoom_step": 0.05 }"#).unwrap();
         let s = ShellSettings::load(dir.path());
-        assert!(s.notify_on_completion);
+        assert!(s.notify.turn_done.enabled);
+        assert_eq!(s.notify.turn_done.timing, NotifyTiming::Background);
         assert_eq!(s.completion_sound, CompletionSound::Default);
     }
 
@@ -353,13 +455,13 @@ mod tests {
     fn completion_sound_roundtrip_and_serde_names() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = ShellSettings::default();
-        s.notify_on_completion = false;
+        s.notify.turn_done.enabled = false;
         s.completion_sound = CompletionSound::Sms;
         s.save(dir.path());
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(text.contains(r#""completion_sound": "sms""#), "实际文件：{text}");
         let s2 = ShellSettings::load(dir.path());
-        assert!(!s2.notify_on_completion);
+        assert!(!s2.notify.turn_done.enabled);
         assert_eq!(s2.completion_sound, CompletionSound::Sms);
     }
 
@@ -373,7 +475,7 @@ mod tests {
         .unwrap();
         let s = ShellSettings::load(dir.path());
         assert_eq!(s.completion_sound, CompletionSound::Default);
-        assert!(s.notify_on_completion);
+        assert!(s.notify.turn_done.enabled);
     }
 
     #[test]

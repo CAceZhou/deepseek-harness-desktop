@@ -13,8 +13,9 @@
 ```
 src-tauri/src/
   lib.rs            Builder 组装：插件(single_instance 必须最先；window-state 记忆窗口几何，
-                    flags 不含 VISIBLE 防托盘隐藏态被记住；restore 晚于首批可见帧，
-                    故主窗口 conf visible:false 创建、on_page_load(Finished) 再 show)
+                    flags 不含 VISIBLE 防托盘隐藏态被记住；restore 在 window_created 排队、
+                    早于首个可见帧落地，故主窗口 conf visible:false + center:true 创建
+                    （首启居中，有记忆几何则被覆盖）、on_page_load(Finished) 再 show 不闪变)
                     → setup → 事件桥(dsh-ready→导航)
   platform/         平台抽象 trait（多平台预留）；windows.rs 实现；macos/linux 待实现
   process.rs        DshProcess 监督循环：spawn node bin.js web --port N、指数退避、stop/restart
@@ -22,16 +23,20 @@ src-tauri/src/
                     （.version 比对）；原地模式会清理旧版留下的 %LOCALAPPDATA% 部署副本
   notify/           WS 事件源（ws.rs 泛化 {path, handler, on_connect}，连 events.mux +
                     events.host 双下行）+ 帧分类（approval/question、turn/end 完成、
-                    session/title 入 SessionBook 台账；子代理经 host 流 origin 过滤）
+                    session/title 入 SessionBook 台账；子代理经 host 流 origin 过滤）；
+                    sink 在 lib.rs：前台=任一窗口聚焦，按 settings.notify 三类规则门控
   theme.rs          标题栏主题跟随：轮询 dsh-home/settings.yaml 的 ui-theme.preference；
                     首启播种（settings.yaml 缺失时按系统深浅色预写 preference，dsh 缺省是浅色）
   progress.rs       首启进度模型：阶段权重、百分比映射、结构化 dsh-progress 负载
   tray.rs           系统托盘菜单（打开/诊断/技能管理/MCP 管理/重启/其它设置/退出）；
-                    diagnostics.rs 状态/日志环形缓冲；commands.rs 7 个 invoke 命令
+                    按需窗口 builder .center()（首启居中，记忆几何由 window-state 覆盖）；
+                    diagnostics.rs 状态/日志环形缓冲；commands.rs 8 个 invoke 命令
   zoom.rs           UI 缩放：钩子脚本 hook_js(settings) 动态内嵌快捷键(on_page_load eval，
                     只注入 main 窗口)、direction 命令按设置读步进、ui-zoom.txt 持久化
   settings.rs       壳设置：settings.json 模型（步进 1-25%/快捷键/关窗行为/
-                    完成通知开关/提示音 silent|default|im|mail|reminder|sms）、校验、
+                    notify 三类通知规则 {enabled,timing:background|always}（旧
+                    notify_on_completion 读取时迁移进 turn_done）/提示音
+                    silent|default|im|mail|reminder|sms|chime|drop|mellow）、校验、
                     SettingsState、get/set_shell_settings + preview_completion_sound 命令
   skills.rs         技能管理：DSH_HOME(壳注入，非~/.dsh)的 skills/(启用) ↔
                     skills-disabled/(停用) 目录移动即开关（dsh watcher 热刷新）；
@@ -73,7 +78,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（113 个：单元+进程集成+WS通知+控制台窗口+远程访问）
+cd src-tauri && cargo test            # 全部测试（117 个：单元+进程集成+WS通知+控制台窗口+远程访问）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -99,7 +104,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 113 个）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 117 个）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 

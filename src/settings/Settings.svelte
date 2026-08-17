@@ -5,22 +5,27 @@
 
   type Shortcut = { ctrl: boolean; shift: boolean; alt: boolean; code: string; key: string }
   type CompletionSound = 'silent' | 'default' | 'im' | 'mail' | 'reminder' | 'sms' | 'chime' | 'drop' | 'mellow'
+  type NotifyTiming = 'background' | 'always'
+  type NotifyRule = { enabled: boolean; timing: NotifyTiming }
+  // 与 Rust 端 NotifySettings 对应：approval=任务确认 question=选项选择 turn_done=回答完毕
+  type NotifySettings = { approval: NotifyRule; question: NotifyRule; turn_done: NotifyRule }
   type ShellSettings = {
     zoom_step: number
     zoom_in: Shortcut
     zoom_out: Shortcut
     close_behavior: 'background' | 'quit'
-    notify_on_completion: boolean
+    notify: NotifySettings
     completion_sound: CompletionSound
   }
 
-  // 与 Rust 端 ShellSettings::default 保持一致
+  // 与 Rust 端 ShellSettings::default 保持一致（三类通知默认均开、仅后台时提醒）
+  const DEFAULT_RULE: NotifyRule = { enabled: true, timing: 'background' }
   const DEFAULTS: ShellSettings = {
     zoom_step: 0.02,
     zoom_in: { ctrl: true, shift: true, alt: false, code: 'Equal', key: '+' },
     zoom_out: { ctrl: true, shift: true, alt: false, code: 'Minus', key: '_' },
     close_behavior: 'background',
-    notify_on_completion: true,
+    notify: { approval: { ...DEFAULT_RULE }, question: { ...DEFAULT_RULE }, turn_done: { ...DEFAULT_RULE } },
     completion_sound: 'default',
   }
 
@@ -37,11 +42,18 @@
     { value: 'mellow', label: '和弦' },
   ]
 
+  // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
+  const NOTIFY_ROWS: { key: keyof NotifySettings; label: string }[] = [
+    { key: 'approval', label: '任务确认（待批准）' },
+    { key: 'question', label: '选项选择（待回答）' },
+    { key: 'turn_done', label: '回答完毕（任务完成）' },
+  ]
+
   let zoomIn = $state<Shortcut>({ ...DEFAULTS.zoom_in })
   let zoomOut = $state<Shortcut>({ ...DEFAULTS.zoom_out })
   let stepPct = $state(2)
   let closeBehavior = $state<'background' | 'quit'>('background')
-  let notifyOnCompletion = $state(true)
+  let notify = $state<NotifySettings>(structuredClone(DEFAULTS.notify))
   let completionSound = $state<CompletionSound>('default')
   let autostart = $state(false)
   let recording = $state<'in' | 'out' | null>(null)
@@ -62,7 +74,7 @@
     zoomOut = { ...s.zoom_out }
     stepPct = Math.round(s.zoom_step * 100)
     closeBehavior = s.close_behavior
-    notifyOnCompletion = s.notify_on_completion
+    notify = structuredClone(s.notify)
     completionSound = s.completion_sound
   }
 
@@ -134,7 +146,7 @@
         zoom_in: zoomIn,
         zoom_out: zoomOut,
         close_behavior: closeBehavior,
-        notify_on_completion: notifyOnCompletion,
+        notify,
         completion_sound: completionSound,
       }
       await invoke('set_shell_settings', { next })
@@ -187,15 +199,28 @@
   </section>
 
   <section class="card">
-    <h2>{t('任务完成通知')}</h2>
-    <label class="check">
-      <input type="checkbox" bind:checked={notifyOnCompletion} />
-      {t('主窗口隐藏时，dsh 回答完成弹 Windows 通知')}
-    </label>
+    <h2>{t('通知提醒')}</h2>
+    {#each NOTIFY_ROWS as row (row.key)}
+      {@const rule = notify[row.key]}
+      <div class="row">
+        <label class="check">
+          <input type="checkbox" bind:checked={rule.enabled} />
+          {t(row.label)}
+        </label>
+        <span class="control">
+          <select bind:value={rule.timing} disabled={!rule.enabled}>
+            <option value="background">{t('仅后台时提醒')}</option>
+            <option value="always">{t('总是提醒')}</option>
+          </select>
+        </span>
+      </div>
+    {/each}
+    <p class="hint">{t('后台 = 本应用窗口均未聚焦；正在前台操作时不会弹通知打扰')}</p>
+    <div class="divider"></div>
     <div class="row">
       <span>{t('完成提示音')}</span>
       <span class="control">
-        <select bind:value={completionSound} disabled={!notifyOnCompletion}>
+        <select bind:value={completionSound} disabled={!notify.turn_done.enabled}>
           {#each SOUND_OPTIONS as opt (opt.value)}
             <option value={opt.value}>{t(opt.label)}</option>
           {/each}
@@ -203,7 +228,7 @@
         <button
           class="ghost small"
           onclick={previewSound}
-          disabled={!notifyOnCompletion || completionSound === 'silent'}
+          disabled={!notify.turn_done.enabled || completionSound === 'silent'}
         >
           {t('试听')}
         </button>
@@ -353,6 +378,12 @@
   .group-label {
     font-size: 13px;
     color: var(--text-2);
+  }
+  .hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-2);
+    opacity: 0.8;
   }
   .notice {
     margin: 0;
