@@ -58,6 +58,19 @@ const server = http.createServer((req, res) => {
     res.end('{"ok":true}')
     return
   }
+  // SPA 入口文档模拟：真实 dsh 对所有非 /api 路径回同一 text/html 文档，
+  // 供代理移动端样式注入测试
+  if (req.url === '/app') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end('<!doctype html><html><head><meta charset="utf-8"><title>fake</title></head><body><div id="root"></div></body></html>')
+    return
+  }
+  // 无 </head> 的 HTML：注入应静默跳过、原文透传
+  if (req.url === '/app-nohead') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end('<!doctype html><html><body>no head</body></html>')
+    return
+  }
   res.writeHead(200, { 'content-type': 'text/plain' })
   res.end('ok')
 })

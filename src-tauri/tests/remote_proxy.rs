@@ -328,6 +328,96 @@ async fn rewrites_welcome_notice_persistence_in_plugin_bundle() {
     proxy.shutdown().await;
 }
 
+/// 移动端适配：代理转发 HTML 文档时往 </head> 前注入 mobile.css（设置弹窗全屏化、
+/// 侧栏抽屉化等 @media ≤700px 规则）。无 </head> 或非 HTML 一律原文透传。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn injects_mobile_css_into_html_documents() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut child = spawn_fixture(dsh_port, work.path());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(r) = get_direct(&format!("http://127.0.0.1:{dsh_port}/")).await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "fixture 15s 内未就绪");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let base = format!("http://127.0.0.1:{}", proxy.port);
+    let http = client();
+
+    // 1. HTML 文档：注入移动端样式（浏览器文档请求带 accept: text/html 与压缩意愿）
+    let r = http
+        .get(format!("{base}/app"))
+        .header("cookie", format!("{COOKIE_NAME}={token}"))
+        .header("accept", "text/html,application/xhtml+xml")
+        .header("accept-encoding", "gzip, br") // 改写路径须剥掉求 identity
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers().get("content-encoding").is_none(),
+        "改写路径不应带压缩编码"
+    );
+    let content_length = r
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    let body = r.text().await.unwrap();
+    if let Some(n) = content_length {
+        // hyper 对完整缓冲体会自动重算 content-length：若存在则必须等于新长度
+        assert_eq!(n, body.len(), "content-length 应与改写后体长一致");
+    }
+    assert!(
+        body.contains("<!-- dshdesktop-mobile --><style>"),
+        "应注入样式标记，实际：{body}"
+    );
+    assert!(
+        body.contains("max-width: 700px") && body.contains("</head>"),
+        "注入内容应含移动端媒体查询且保留 </head>：{body}"
+    );
+    assert!(
+        body.contains("</style><script>") && body.contains("data-dshmobile-tab"),
+        "应注入信息标签页脚本：{body}"
+    );
+    assert!(
+        body.find("<!-- dshdesktop-mobile -->").unwrap() < body.find("</head>").unwrap(),
+        "样式应注入到 </head> 之前"
+    );
+
+    // 2. 无 </head> 的 HTML：原文透传
+    let r = http
+        .get(format!("{base}/app-nohead"))
+        .header("cookie", format!("{COOKIE_NAME}={token}"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body = r.text().await.unwrap();
+    assert_eq!(body, "<!doctype html><html><body>no head</body></html>");
+
+    // 3. 非 HTML（text/plain）：不受影响
+    let r = http
+        .get(format!("{base}/"))
+        .header("cookie", format!("{COOKIE_NAME}={token}"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.unwrap(), "ok");
+
+    let _ = child.kill();
+    proxy.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_stops_listener() {
     let (proxy, _token) = start_proxy(Some(1)).await;

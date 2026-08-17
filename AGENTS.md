@@ -69,6 +69,15 @@ src-tauri/src/
                     转发必须剥 origin/referer/sec-fetch-* 浏览器标记头
                     （dsh /api 信任栅栏：Origin.host≠Host 头或 cross-site → 403）；
                     转发客户端必须 .no_proxy() 防系统代理劫持 127.0.0.1；
+                    HTML 文档注入移动端适配（accept 含 text/html 且 identity ≤4MB）：
+                    mobile.css 700px 断点，设置弹窗全屏+横向 tab、侧栏抽屉化、
+                    模型选择器图标化、触发器菜单包含块修复（position:static 上移到
+                    输入卡片）；mobile.js 在"对话/轨迹"旁加"信息"标签页——统计行
+                    克隆进面板（MutationObserver 同步，克隆而非搬家：React 对被移
+                    节点 removeChild 必崩），enhanced 标记隐藏原行且跟随
+                    matchMedia 断点（离开 700px 摘除，防宽屏统计无处可见）；
+                    JS 失效时 CSS 两行换行兜底。选择器锚 role/data-* 语义钩子
+                    +CSS Modules 本地名子串（[class*="_nav"]），上游改名静默失效；
                     /plugins/*/client.js 响应缓冲改写（≤4MB 仅 identity，剥
                     accept-encoding 与条件请求头）：isLoopback 三元式→"host"，
                     修远程每次弹内测声明（非回环源 memory 持久化不落盘）) +

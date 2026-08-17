@@ -1,0 +1,224 @@
+/*
+ * DSHDesktop 远程访问移动端适配：代理转发 dsh 的 HTML 文档时注入（proxy.rs）。
+ *
+ * 断点 700px：桌面壳窗口最小宽 900px 永远命中不到，仅手机/窄窗远程访问生效。
+ * 选择器只锚两类稳定目标——语义钩子（[role="dialog"]、data-sidebar-collapsed 等
+ * 源码属性）与 CSS Modules 本地名子串（[class*="_nav"]，哈希前缀随 dsh 版本变化
+ * 不影响匹配）。上游若改名，对应规则静默失效：页面回到未适配状态，不破坏功能。
+ */
+
+/* mobile.js 注入的信息标签/面板：仅 ≤700px 生效，宽屏（含窗口拉窄后又放大）隐藏 */
+[data-dshmobile-tab],
+[data-dshmobile-info] {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  /*
+   * 设置弹窗：全屏化，左侧 188px 固定导航列改顶部横向 tab 条。
+   * 原布局在手机上弹窗仅 ~342px 宽，导航列不收缩，内容区不足百像素，
+   * 文字被压成一字一行竖排。
+   */
+  [role="dialog"][class*="_panel"]:has(> [class*="_nav"]) {
+    width: 100vw;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    border-radius: 0;
+    flex-direction: column;
+  }
+  [role="dialog"][class*="_panel"]:has(> [class*="_nav"]) > [class*="_nav"] {
+    width: 100%;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    padding: 10px 8px 0;
+    overflow-x: auto;
+  }
+  /* “设置”标题在顶部 tab 条里纯属占位，省出纵向空间 */
+  [role="dialog"][class*="_panel"]:has(> [class*="_nav"]) [class*="_navTitle"] {
+    display: none;
+  }
+  [role="dialog"][class*="_panel"]:has(> [class*="_nav"]) [class*="_navList"] {
+    flex: 1 1 auto;
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+  }
+  [role="dialog"][class*="_panel"]:has(> [class*="_nav"]) [class*="_navCell"] {
+    flex: 0 0 auto;
+    height: 36px;
+    padding: 6px 12px;
+    white-space: nowrap;
+  }
+  [role="dialog"][class*="_panel"]:has(> [class*="_nav"]) > [class*="_content"] {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  /*
+   * 侧栏展开改抽屉。dsh narrow 模式（<1024px）下展开侧栏仍占 280px 固定
+   * 网格轨，主区被压到 viewport-280（390px 手机只剩 110px，首页标语竖排）。
+   * 抽屉化：轨道归零、侧栏内容溢出覆盖主区，z-index 抬到内容之上。
+   * data-sidebar-collapsed 展开时不存在（React void 0 移除属性），:not 即展开态。
+   */
+  [class*="_frame"]:has(> [class*="_sidebarCol"]):not([data-sidebar-collapsed]) {
+    grid-template-columns: 0 minmax(0, 1fr) 0 !important;
+  }
+  [class*="_frame"]:has(> [class*="_sidebarCol"]):not([data-sidebar-collapsed]) > [class*="_sidebarCol"] {
+    position: relative;
+    z-index: 30;
+    overflow: visible;
+  }
+  [class*="_frame"]:has(> [class*="_sidebarCol"]):not([data-sidebar-collapsed]) > [class*="_sidebarCol"] > [class*="_root"] {
+    width: min(300px, 84vw);
+    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.3);
+  }
+  /* 列宽拖拽手柄触屏无用且会挡住边缘触控 */
+  [class*="_frame"]:has(> [class*="_sidebarCol"]) > [class*="_handle"] {
+    display: none;
+  }
+
+  /*
+   * 输入区底栏：模型选择器图标化（手机端惯例：栏内只留图标，具体型号在点开的
+   * 二级菜单里选）。trailing 组 flex 0 0 auto 不收缩（手机上 262px/292px），
+   * 前导 + 按钮被压到 2px 宽并与模型名重叠；允许收缩 + 文案隐藏后整行只余图标。
+   */
+  [class*="_trailing"] {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  /* 模型触发器 = 唯一带 effort 段的触发器（triggerEffort 仅它拥有），
+     权限触发器的文案上游在窄屏已自行隐藏，无需处理 */
+  [class*="_trailing"] [class*="_trigger"]:has(> [class*="_triggerEffort"]) [class*="_triggerLabel"],
+  [class*="_trailing"] [class*="_trigger"]:has(> [class*="_triggerEffort"]) [class*="_triggerEffort"] {
+    display: none;
+  }
+  /* 模型触发器原生只有文案 + chevron，文案隐藏后补一枚火花图标；
+     mask + currentColor 让图标跟随主题文字色（深浅色都正确） */
+  [class*="_trailing"] [class*="_trigger"]:has(> [class*="_triggerEffort"])::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 15px;
+    height: 15px;
+    background: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1l1.8 4.7L14.5 7.5l-4.7 1.8L8 14l-1.8-4.7L1.5 7.5l4.7-1.8z'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1l1.8 4.7L14.5 7.5l-4.7 1.8L8 14l-1.8-4.7L1.5 7.5l4.7-1.8z'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+
+  /*
+   * 触发器二级菜单越界：菜单以触发器为包含块 right:0 右对齐，宽 240px 时
+   * 左缘越出中列被 centerCol 的 overflow:hidden 裁掉（标签"模型"只剩"型"）。
+   * 触发器改静态定位后包含块上移到输入卡片，right:0 对齐卡片右缘，
+   * bottom:calc(100%+8px) 也顺势变成贴着卡片上方弹出，菜单完整在屏内。
+   */
+  [class*="_trailing"] [class*="_root"]:has(> [class*="_menu"]) {
+    position: static;
+  }
+
+  /*
+   * 回合统计行（N 轮 · N 步 | LLM 耗时 | 首 token … | 缓存命中 | 输入输出）
+   * 内容约 460px 宽、单行 nowrap，手机 294px 必然从中截断（"首 token 平…"）。
+   * 正常路径：mobile.js 在"对话/轨迹"旁加"信息"标签，统计行整体移入面板
+   * （克隆同步，见 mobile.js），打 data-dshmobile-enhanced 后原行隐藏。
+   * 兜底路径（JS 失效/未命中节点）：信息全保留，隐藏 | 分隔符、改弹性换行
+   * （约两行居中），条目内部不断行。
+   * 锚点：输入区栈（composerStack）内"直接子代含分隔符的 root"即统计行。
+   */
+  html:not([data-dshmobile-enhanced]) [class*="_composerStack"] [class*="_root"]:has(> [class*="_sep"]) {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 2px 10px;
+    padding-left: 8px;
+    padding-right: 8px;
+    white-space: normal;
+    overflow: visible;
+  }
+  html:not([data-dshmobile-enhanced]) [class*="_composerStack"] [class*="_root"]:has(> [class*="_sep"]) > [class*="_sep"] {
+    display: none;
+  }
+  html:not([data-dshmobile-enhanced]) [class*="_composerStack"] [class*="_root"]:has(> [class*="_sep"]) > span {
+    white-space: nowrap;
+  }
+  html[data-dshmobile-enhanced] [class*="_composerStack"] [class*="_root"]:has(> [class*="_sep"]) {
+    display: none;
+  }
+
+  /*
+   * 信息标签页（mobile.js 注入）。标签类名克隆自原生标签，此处只补激活态
+   * （对齐原生 _tabActive：主题主色 + 2px 下划线）；信息页打开时把原生激活
+   * 标签视觉降级为未激活——React 状态不动，纯视觉转移。
+   */
+  [data-dshmobile-tab] {
+    display: block;
+  }
+  [data-dshmobile-tab][data-active] {
+    color: var(--dsw-alias-state-business-primary);
+  }
+  [data-dshmobile-tab][data-active]::after {
+    background: var(--dsw-alias-state-business-primary);
+  }
+  [class*="_tabs"][data-dshmobile-open] [class*="_tabActive"] {
+    color: var(--dsw-alias-label-tertiary);
+  }
+  [class*="_tabs"][data-dshmobile-open] [class*="_tabActive"]::after {
+    background: 0 0;
+  }
+
+  /*
+   * 信息面板：绝对定位盖在会话区上（顶边=头部高，由 JS 量取），z-index 5
+   * 低于输入条座（z 7）——面板不挡输入，查看统计时仍可继续发问。
+   */
+  [class*="_root"][data-dshmobile-info-open] {
+    position: relative;
+  }
+  [data-dshmobile-info-open] > [data-dshmobile-info] {
+    display: block;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    overflow-y: auto;
+    background: var(--dsw-alias-bg-base);
+  }
+  [data-dshmobile-info-card] {
+    margin: 16px;
+    padding: 16px 18px;
+    border: 1px solid var(--dsw-alias-border-l1);
+    border-radius: 12px;
+    background: var(--dsw-alias-bg-layer-1);
+  }
+  [data-dshmobile-info-card] h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--dsw-alias-label-tertiary);
+  }
+  /* 统计克隆：面板内每条指标独占一行（原行的 | 分隔符不再显示） */
+  [data-dshmobile-info-body] [data-dshmobile-stats] {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0;
+    text-align: left;
+    white-space: normal;
+    overflow: visible;
+    max-width: none;
+    width: auto;
+    font-size: 13px;
+    color: var(--dsw-alias-label-primary);
+  }
+  [data-dshmobile-info-body] [class*="_sep"] {
+    display: none;
+  }
+  [data-dshmobile-empty] {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--dsw-alias-label-tertiary);
+  }
+}

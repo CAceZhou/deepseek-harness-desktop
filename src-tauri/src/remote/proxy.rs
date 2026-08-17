@@ -42,10 +42,30 @@ const WELCOME_NOTICE_REPL: &[u8] = br#""host""#;
 /// 只对不超过该体积的插件 bundle 做缓冲改写，超出原样透传（声明照弹，不破坏功能）
 const REWRITE_BUFFER_LIMIT: u64 = 4 * 1024 * 1024;
 
+/// 移动端适配样式（同目录 mobile.css，编译期内嵌）：远程访问的 dsh Web UI 在手机上
+/// 有两处实测破版——设置弹窗内容区被 188px 固定导航列压到一字一行竖排、narrow 模式
+/// 展开侧栏把主区压到 110px。桌面壳窗口最小宽 900px，命中不到 700px 断点，注入只
+/// 影响经代理的远程访问。选择器锚 role/data-* 语义钩子与 CSS Modules 本地名子串，
+/// dsh 版本更新哈希变化不失效；上游改名则静默回到未适配状态。
+const MOBILE_CSS: &str = include_str!("mobile.css");
+/// 信息标签页脚本：≤700px 时在"对话/轨迹"旁加"信息"标签，统计行克隆进面板
+/// （克隆而非搬家——React 对被移节点 removeChild 必崩）。失效时 CSS 换行兜底。
+const MOBILE_JS: &str = include_str!("mobile.js");
+/// 注入标记：测试断言与排查时识别（注释节点，无渲染影响）
+const MOBILE_INJECT_MARKER: &str = "<!-- dshdesktop-mobile -->";
+
 /// 插件客户端 bundle 路径：/plugins/<id>/client.js[?rev=N]
 fn is_plugin_client_bundle(path_and_query: &str) -> bool {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     path.starts_with("/plugins/") && path.ends_with("/client.js")
+}
+
+/// 浏览器文档导航请求（accept 含 text/html）：HTML 改写路径的候选
+fn wants_html_document(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"))
 }
 
 /// 当前有效 token 的共享单元：重置链接时原地轮换，门岗逐请求读最新值
@@ -186,6 +206,7 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
     };
     let url = format!("http://127.0.0.1:{port}{path_and_query}");
     let rewrite_bundle = is_plugin_client_bundle(path_and_query);
+    let wants_html = wants_html_document(req.headers());
     let mut out = st.client.request(req.method().clone(), &url);
     for (name, value) in req.headers() {
         // host/content-length 由 reqwest 按目标与 body 重算；逐跳头不透传。
@@ -215,7 +236,7 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
             continue;
         }
         // 改写路径要求 identity 原文：剥 accept-encoding 防压缩，剥条件请求头防 304
-        if rewrite_bundle
+        if (rewrite_bundle || wants_html)
             && matches!(
                 name.as_str(),
                 "accept-encoding" | "if-none-match" | "if-modified-since"
@@ -238,6 +259,15 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
             {
                 return rewrite_plugin_bundle(res).await;
             }
+            // HTML 文档（dsh 对所有路径回同一 SPA 入口）：缓冲注入移动端适配样式
+            if wants_html
+                && res.status().is_success()
+                && is_html_document(res.headers())
+                && res.headers().get(header::CONTENT_ENCODING).is_none()
+                && res.content_length().map_or(true, |n| n <= REWRITE_BUFFER_LIMIT)
+            {
+                return rewrite_html_document(res).await;
+            }
             let mut builder = Response::builder().status(res.status());
             for (name, value) in res.headers() {
                 if matches!(
@@ -259,16 +289,7 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
 /// 缓冲插件 bundle 响应并改写内测声明三元式。content-length/etag 作废（改写后长度与
 /// 内容都变）；needle 不存在时原样返回（dsh 改版换了写法就静默失效，声明照弹但不破坏页面）。
 async fn rewrite_plugin_bundle(res: reqwest::Response) -> Response {
-    let mut builder = Response::builder().status(res.status());
-    for (name, value) in res.headers() {
-        if matches!(
-            name.as_str(),
-            "connection" | "transfer-encoding" | "keep-alive" | "upgrade" | "content-length" | "etag"
-        ) {
-            continue;
-        }
-        builder = builder.header(name, value);
-    }
+    let builder = buffered_builder(&res);
     match res.bytes().await {
         Ok(bytes) if bytes.len() as u64 <= REWRITE_BUFFER_LIMIT => {
             let body = replace_all(&bytes, WELCOME_NOTICE_NEEDLE, WELCOME_NOTICE_REPL)
@@ -283,6 +304,73 @@ async fn rewrite_plugin_bundle(res: reqwest::Response) -> Response {
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
         Err(_) => (StatusCode::BAD_GATEWAY, "dsh 连接失败").into_response(),
     }
+}
+
+fn is_html_document(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"))
+}
+
+/// 缓冲改写响应的公共头部构造：逐跳头之外再剥 content-length/etag（缓冲改写后
+/// 长度与摘要都作废）
+fn buffered_builder(res: &reqwest::Response) -> axum::http::response::Builder {
+    let mut builder = Response::builder().status(res.status());
+    for (name, value) in res.headers() {
+        if matches!(
+            name.as_str(),
+            "connection" | "transfer-encoding" | "keep-alive" | "upgrade" | "content-length" | "etag"
+        ) {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    builder
+}
+
+/// 缓冲 HTML 文档并往 </head> 前注入移动端适配样式与信息标签页脚本；找不到
+/// </head> 原样返回（dsh 改版换了文档结构就静默失效，页面回到未适配状态但
+/// 不破坏功能）。
+async fn rewrite_html_document(res: reqwest::Response) -> Response {
+    let builder = buffered_builder(&res);
+    match res.bytes().await {
+        Ok(bytes) if bytes.len() as u64 <= REWRITE_BUFFER_LIMIT => {
+            let body = match find_subslice_ci(&bytes, b"</head>") {
+                Some(pos) => {
+                    let mut out =
+                        Vec::with_capacity(bytes.len() + MOBILE_CSS.len() + MOBILE_JS.len() + 96);
+                    out.extend_from_slice(&bytes[..pos]);
+                    out.extend_from_slice(MOBILE_INJECT_MARKER.as_bytes());
+                    out.extend_from_slice(b"<style>");
+                    out.extend_from_slice(MOBILE_CSS.as_bytes());
+                    out.extend_from_slice(b"</style><script>");
+                    out.extend_from_slice(MOBILE_JS.as_bytes());
+                    out.extend_from_slice(b"</script>");
+                    out.extend_from_slice(&bytes[pos..]);
+                    out
+                }
+                None => bytes.to_vec(),
+            };
+            builder
+                .body(Body::from(body))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Ok(bytes) => builder
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(_) => (StatusCode::BAD_GATEWAY, "dsh 连接失败").into_response(),
+    }
+}
+
+/// ASCII 大小写不敏感的子串查找
+fn find_subslice_ci(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
 }
 
 /// 字节级全量替换；needle 一次都没命中时返回 None（调用方原样透传）
