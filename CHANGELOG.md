@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-17
+
 ### Fixed
 
 - "极简模式" (minimal preset) sessions on Windows can actually run shell commands now. Upstream dsh rc.6 mounts a PTY-backed persistent bash for that preset, but `dsh-subprocess-local`'s terminal inspector only implements linux/darwin, so every call failed with "terminal inspection is unsupported on platform win32". At startup the shell rewrites the shipped preset into a PowerShell variant (`tool-pwsh` over the host-plane `pwsh-sandbox` executor, which uses plain pipe spawns) and makes the persona state the working directory explicitly — previously the fixed persona hid all runtime context, so with bash dead the model resorted to guessing `/` / `C:\` and hit Windows ACL denials. The patch is signature-gated (stops applying once upstream adds a `win32` branch) and idempotent, re-applying after dsh self-updates
