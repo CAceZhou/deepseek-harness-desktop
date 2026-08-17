@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-08-17
+
+### Added
+
+- Reset remote link: one click on the `#/remote` page or in the tray submenu rotates the access token in place and drops every established session — the old link, old cookies, and live WebSocket bridges die instantly while the tunnel and domain stay up. This is the revocation path when a link leaks; previously the only option was the non-obvious stop-then-start (which also rebuilds the tunnel and changes the domain). The proxy gate now reads the token from a shared cell per request, and WS bridges select on a drain notify so reset/shutdown cuts them immediately
+
+### Changed
+
+- Settings copy tightened: "保持后台运行（最小化到托盘）" → "最小化到托盘"; notification rules "任务确认（待批准）/选项选择（待回答）/回答完毕（任务完成）" → "任务确认/选项选择/任务完成"
+
+### Fixed
+
+- Reinstalling or uninstalling while the app is running no longer aborts with "Can't write: ...\cloudflared.exe". The stock NSIS flow kills only the main binary, which orphaned the bundled node.exe/cloudflared.exe holding the runtime directory open. Two layers now prevent this: all supervised children are registered in a `KILL_ON_JOB_CLOSE` job object so the kernel reaps them whenever the shell exits for any reason (`Platform::register_child`), and new NSIS pre-install/pre-uninstall hooks (`src-tauri/windows/nsis-hooks.nsh`) taskkill the process tree plus sweep any legacy ≤0.1.8 orphans whose executable lives under the install directory
+
 ## [0.1.8] - 2026-08-17
 
 ### Added
