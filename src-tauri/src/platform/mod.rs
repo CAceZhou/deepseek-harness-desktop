@@ -16,6 +16,10 @@ pub trait Platform: Send + Sync {
     fn kill_process_tree(&self, pid: u32);
     /// 子进程创建前的平台化配置（Windows 设 CREATE_NO_WINDOW 隐藏控制台窗口）
     fn configure_child_command(&self, _cmd: &mut tokio::process::Command) {}
+    /// 注册刚 spawn 的子进程：保证本进程以任何方式退出（含被安装器/任务管理器
+    /// 强杀）时由系统连带回收，杜绝孤儿进程锁住 runtime 目录导致重装失败。
+    /// Windows 用 Job Object + KILL_ON_JOB_CLOSE；其它平台默认 no-op。
+    fn register_child(&self, _pid: u32) {}
     /// 系统是否处于深色模式（dsh 主题为 system 时用来解析）
     fn system_dark_mode(&self) -> bool;
     /// 系统 UI 语言是否中文（dsh locale.preference 缺省时用来解析，对齐 dsh 的"跟随浏览器"）

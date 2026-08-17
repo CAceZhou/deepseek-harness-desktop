@@ -145,6 +145,8 @@ impl DshProcess {
                 }
             };
             let pid = child.id().unwrap_or(0);
+            // 挂进 KILL_ON_JOB_CLOSE Job：本进程被强杀时 node 整树由内核连带回收
+            self.inner.platform.register_child(pid);
             self.inner.pid.store(pid, Ordering::SeqCst);
             if let Some(out) = child.stdout.take() {
                 self.spawn_pump(out);
