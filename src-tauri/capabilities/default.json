@@ -38,6 +38,10 @@
     "allow-get-remote-status",
     "allow-copy-remote-link",
     "allow-get-remote-qr",
-    "allow-reset-remote-link"
+    "allow-reset-remote-link",
+    "allow-check-update",
+    "allow-download-update",
+    "allow-install-update",
+    "allow-open-update-page"
   ]
 }

@@ -22,6 +22,7 @@ pub mod settings;
 pub mod skills;
 pub mod theme;
 pub mod tray;
+pub mod update;
 pub mod zoom;
 
 use notify::{Notification, NotifySink, NotifySource};
@@ -84,6 +85,10 @@ pub fn run() {
             remote::copy_remote_link,
             remote::get_remote_qr,
             remote::reset_remote_link,
+            update::check_update,
+            update::download_update,
+            update::install_update,
+            update::open_update_page,
         ])
         .on_page_load(|webview, payload| {
             if !matches!(
@@ -417,6 +422,19 @@ pub fn run() {
                     }
                 }),
             ));
+            // 启动时检查更新（设置默认关）：异步查 GitHub，有新版弹 toast 指向
+            // 其它设置页；失败只记 events.log，不打断启动流程
+            if handle
+                .state::<settings::SettingsState>()
+                .get()
+                .check_update_on_launch
+            {
+                let update_handle = handle.clone();
+                let update_log = platform.runtime_base_dir().join("events.log");
+                tauri::async_runtime::spawn(async move {
+                    update::check_on_launch(update_handle, update_log).await;
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

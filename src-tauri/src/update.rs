@@ -1,0 +1,431 @@
+//! 检查更新：GitHub `releases/latest` API 查版本，手动更新直接下载 NSIS 安装包。
+//!
+//! - reqwest 走系统代理：访问的是外网 GitHub（回环才需要 no_proxy，见 remote/proxy.rs），
+//!   国内用户挂代理时代理反而是通路的必要条件
+//! - GitHub API 必须带 User-Agent，否则一律 403
+//! - 安装包选择：assets 中 `*_x64-setup.exe`（多平台包出现后需按 triplet 扩展）
+//! - 下载原子落盘：先写 `<name>.part`，完成后 rename 成正式名；进度按百分比变化
+//!   节流 emit（与 lib.rs 复制运行时的 copy_cb 同款），避免刷爆 IPC
+//! - 检查结果/下载成败都记 events.log（诊断面板之外的最后手段）
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
+
+const RELEASES_LATEST_API: &str =
+    "https://api.github.com/repos/LBurny/deepseek-harness-desktop/releases/latest";
+const RELEASES_PAGE: &str = "https://github.com/LBurny/deepseek-harness-desktop/releases";
+/// 进度事件名：前端 Settings 页监听；负载 { downloaded, total }，total=0 表示长度未知
+const PROGRESS_EVENT: &str = "update-download-progress";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateInfo {
+    pub current: String,
+    pub latest: String,
+    pub has_update: bool,
+    pub release_url: String,
+    pub asset_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Release {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+    #[serde(default)]
+    size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DownloadProgress {
+    downloaded: u64,
+    total: u64,
+}
+
+/// 解析 "v0.1.13" / "0.1.13" / "1.2.3-rc.1" 为数字段序列；含非数字段 → None。
+/// 预发布后缀（-rc.1 等）直接忽略——本仓库发布只用干净 tag。
+fn parse_version(s: &str) -> Option<Vec<u64>> {
+    let core = s
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split(['-', '+'])
+        .next()?;
+    if core.is_empty() {
+        return None;
+    }
+    core.split('.').map(|p| p.parse::<u64>().ok()).collect()
+}
+
+/// latest 是否比 current 新：逐段数值比较，短序列缺段按 0 补齐；
+/// 任一侧解析失败按"不是新版"处理，宁可漏报不要误报。
+fn is_newer(current: &str, latest: &str) -> bool {
+    let (Some(c), Some(l)) = (parse_version(current), parse_version(latest)) else {
+        return false;
+    };
+    for i in 0..c.len().max(l.len()) {
+        let a = c.get(i).copied().unwrap_or(0);
+        let b = l.get(i).copied().unwrap_or(0);
+        if a != b {
+            return b > a;
+        }
+    }
+    false
+}
+
+fn pick_setup_asset(rel: &Release) -> Option<&Asset> {
+    rel.assets.iter().find(|a| a.name.ends_with("_x64-setup.exe"))
+}
+
+/// tag "v0.1.13" → "0.1.13"，与 CARGO_PKG_VERSION 的显示格式对齐
+fn display_version(tag: &str) -> &str {
+    tag.trim().trim_start_matches(['v', 'V'])
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(concat!("DSHDesktop/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+async fn fetch_latest(client: &reqwest::Client) -> Result<Release, String> {
+    let resp = client
+        .get(RELEASES_LATEST_API)
+        .timeout(std::time::Duration::from_secs(15))
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| {
+            crate::i18n::pick(
+                format!("网络请求失败：{e}"),
+                format!("Network request failed: {e}"),
+            )
+        })?;
+    if !resp.status().is_success() {
+        return Err(crate::i18n::pick(
+            format!("GitHub 返回 {}", resp.status()),
+            format!("GitHub responded with {}", resp.status()),
+        ));
+    }
+    resp.json::<Release>().await.map_err(|e| {
+        crate::i18n::pick(
+            format!("发布信息解析失败：{e}"),
+            format!("Failed to parse release info: {e}"),
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn check_update() -> Result<UpdateInfo, String> {
+    let client = http_client()?;
+    let rel = fetch_latest(&client).await?;
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let asset_size = pick_setup_asset(&rel).map(|a| a.size);
+    let has_update = is_newer(&current, &rel.tag_name);
+    let latest = display_version(&rel.tag_name).to_string();
+    Ok(UpdateInfo { current, latest, has_update, release_url: rel.html_url, asset_size })
+}
+
+/// 流式写入 .part，按百分比变化节流 emit 进度；返回已下载字节数。
+async fn stream_to_file(
+    app: &AppHandle,
+    resp: reqwest::Response,
+    part: &Path,
+) -> Result<u64, String> {
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let total = resp.content_length().unwrap_or(0);
+    let mut file = tokio::fs::File::create(part).await.map_err(|e| {
+        crate::i18n::pick(
+            format!("无法写入下载目录：{e}"),
+            format!("Cannot write to the download folder: {e}"),
+        )
+    })?;
+    let _ = app.emit(PROGRESS_EVENT, DownloadProgress { downloaded: 0, total });
+    let mut downloaded = 0u64;
+    let mut last_pct = 0u64;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            crate::i18n::pick(format!("下载中断：{e}"), format!("Download interrupted: {e}"))
+        })?;
+        file.write_all(&chunk).await.map_err(|e| {
+            crate::i18n::pick(
+                format!("写入失败：{e}"),
+                format!("Failed to write file: {e}"),
+            )
+        })?;
+        downloaded += chunk.len() as u64;
+        let pct = if total > 0 { downloaded * 100 / total } else { 0 };
+        if pct != last_pct {
+            last_pct = pct;
+            let _ = app.emit(PROGRESS_EVENT, DownloadProgress { downloaded, total });
+        }
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+    Ok(downloaded)
+}
+
+/// 手动更新：重新拉一次 latest（不缓存，避免拿到过期资产地址），
+/// 把安装包下载到系统下载目录；完成后返回安装包完整路径。
+#[tauri::command]
+pub async fn download_update(
+    app: AppHandle,
+    platform: tauri::State<'_, Arc<dyn crate::platform::Platform>>,
+) -> Result<String, String> {
+    let log = platform.runtime_base_dir().join("events.log");
+    let client = http_client()?;
+    let rel = fetch_latest(&client).await?;
+    if !is_newer(env!("CARGO_PKG_VERSION"), &rel.tag_name) {
+        return Err(crate::i18n::pick("当前已是最新版本", "Already up to date").into());
+    }
+    let asset = pick_setup_asset(&rel).ok_or_else(|| {
+        crate::i18n::pick(
+            "该版本没有 Windows 安装包",
+            "No Windows installer asset in this release",
+        )
+    })?;
+    crate::append_debug_line(
+        &log,
+        &format!("Update: downloading {} from {}", asset.name, asset.browser_download_url),
+    );
+
+    let resp = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .map_err(|e| {
+            crate::i18n::pick(
+                format!("网络请求失败：{e}"),
+                format!("Network request failed: {e}"),
+            )
+        })?;
+    if !resp.status().is_success() {
+        return Err(crate::i18n::pick(
+            format!("下载地址返回 {}", resp.status()),
+            format!("Download URL responded with {}", resp.status()),
+        ));
+    }
+
+    let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+    let part = dir.join(format!("{}.part", asset.name));
+    let final_path = dir.join(&asset.name);
+    let downloaded = match stream_to_file(&app, resp, &part).await {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            crate::append_debug_line(&log, &format!("Update: download failed: {e}"));
+            return Err(e);
+        }
+    };
+    // rename 不覆盖同名旧文件（上一次下载的同版本包）：先删再改名
+    if final_path.exists() {
+        let _ = std::fs::remove_file(&final_path);
+    }
+    std::fs::rename(&part, &final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        crate::i18n::pick(
+            format!("安装包落盘失败：{e}"),
+            format!("Failed to finalize the installer: {e}"),
+        )
+    })?;
+    // 收尾强制 100%：content-length 与实际字节数不一致时流内可能到不了 100；
+    // max(1) 防前端 total=0 除零
+    let _ = app.emit(
+        PROGRESS_EVENT,
+        DownloadProgress { downloaded, total: downloaded.max(1) },
+    );
+    crate::append_debug_line(
+        &log,
+        &format!("Update: downloaded {} bytes -> {}", downloaded, final_path.display()),
+    );
+    Ok(final_path.to_string_lossy().to_string())
+}
+
+/// 运行已下载的安装包。NSIS preinstall 钩子会 taskkill 本进程树——
+/// 覆盖安装的既定流程（见 windows/nsis-hooks.nsh），不是异常。
+#[tauri::command]
+pub fn install_update(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if !name.ends_with("_x64-setup.exe") || !p.is_file() {
+        return Err(crate::i18n::pick("安装包路径无效", "Invalid installer path").into());
+    }
+    std::process::Command::new(&p)
+        .spawn()
+        .map_err(|e| {
+            crate::i18n::pick(
+                format!("启动安装包失败：{e}"),
+                format!("Failed to launch the installer: {e}"),
+            )
+        })?;
+    Ok(())
+}
+
+/// 在系统浏览器中打开 releases 页
+#[tauri::command]
+pub fn open_update_page() -> Result<(), String> {
+    open_url(RELEASES_PAGE)
+}
+
+#[cfg(windows)]
+fn open_url(url: &str) -> Result<(), String> {
+    // rundll32 是 GUI 子系统进程，不会闪控制台窗口
+    std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_url(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_url(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 启动时自动检查（设置开启时，默认关）：有新版弹 toast 指向"其它设置 → 检查更新"；
+/// 失败只记 events.log，不打断启动、不打扰用户。
+pub async fn check_on_launch(app: AppHandle, log: PathBuf) {
+    let client = match http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            crate::append_debug_line(&log, &format!("Update: client init failed: {e}"));
+            return;
+        }
+    };
+    match fetch_latest(&client).await {
+        Ok(rel) => {
+            let current = env!("CARGO_PKG_VERSION");
+            if is_newer(current, &rel.tag_name) {
+                let latest = display_version(&rel.tag_name);
+                crate::append_debug_line(
+                    &log,
+                    &format!("Update: new version {latest} available (current {current})"),
+                );
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(crate::i18n::pick("DSHDesktop 有新版本", "DSHDesktop update available"))
+                    .body(crate::i18n::pick(
+                        format!("v{latest} 已发布，可在 其它设置 → 检查更新 中下载"),
+                        format!("v{latest} is available — get it in Other settings → Check for updates"),
+                    ))
+                    .show();
+            } else {
+                crate::append_debug_line(&log, &format!("Update: up to date ({current})"));
+            }
+        }
+        Err(e) => crate::append_debug_line(&log, &format!("Update: check on launch failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_version_accepts_common_shapes() {
+        assert_eq!(parse_version("0.1.13"), Some(vec![0, 1, 13]));
+        assert_eq!(parse_version("v0.1.13"), Some(vec![0, 1, 13]));
+        assert_eq!(parse_version("V1.2"), Some(vec![1, 2]));
+        assert_eq!(parse_version(" 1.2.3 "), Some(vec![1, 2, 3]));
+        assert_eq!(parse_version("1.2.3-rc.1"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_version("1.2.3+build5"), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn parse_version_rejects_garbage() {
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("v"), None);
+        assert_eq!(parse_version("1.x.3"), None);
+        assert_eq!(parse_version("latest"), None);
+    }
+
+    #[test]
+    fn is_newer_compares_segment_by_segment() {
+        assert!(is_newer("0.1.13", "v0.1.14"));
+        assert!(is_newer("0.1.13", "0.2.0"));
+        assert!(is_newer("0.9.9", "1.0.0"));
+        assert!(is_newer("0.1.13", "0.1.13.1")); // 长序列多一段且更大
+        assert!(!is_newer("0.1.13", "0.1.13"));
+        assert!(!is_newer("0.1.13", "v0.1.12"));
+        assert!(!is_newer("0.2.0", "0.1.99"));
+        assert!(!is_newer("0.1.13", "garbage")); // 解析失败不误报
+        assert!(!is_newer("garbage", "0.1.14"));
+    }
+
+    #[test]
+    fn pick_setup_asset_selects_x64_nsis_installer() {
+        let rel: Release = serde_json::from_str(
+            r#"{
+                "tag_name": "v0.1.13",
+                "html_url": "https://github.com/LBurny/deepseek-harness-desktop/releases/tag/v0.1.13",
+                "assets": [
+                    {
+                        "name": "DSHDesktop_0.1.13_x64-setup.exe",
+                        "browser_download_url": "https://github.com/LBurny/deepseek-harness-desktop/releases/download/v0.1.13/DSHDesktop_0.1.13_x64-setup.exe",
+                        "size": 59881350
+                    },
+                    {
+                        "name": "DSHDesktop_0.1.13_x64-setup.exe.sha256",
+                        "browser_download_url": "https://example.com/x.sha256",
+                        "size": 99
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let a = pick_setup_asset(&rel).unwrap();
+        assert_eq!(a.name, "DSHDesktop_0.1.13_x64-setup.exe");
+        assert_eq!(a.size, 59881350);
+        // sha256 校验文件不会被误选（名字以 .sha256 结尾而非 .exe）
+        assert!(a.browser_download_url.ends_with(".exe"));
+    }
+
+    #[test]
+    fn pick_setup_asset_none_when_missing() {
+        let rel: Release = serde_json::from_str(
+            r#"{
+                "tag_name": "v9.9.9",
+                "html_url": "https://example.com",
+                "assets": [{ "name": "DSHDesktop_9.9.9_aarch64.dmg", "browser_download_url": "https://example.com/x" }]
+            }"#,
+        )
+        .unwrap();
+        assert!(pick_setup_asset(&rel).is_none());
+    }
+
+    #[test]
+    fn release_tolerates_missing_assets_and_unknown_fields() {
+        // assets 缺省 → 空列表；GitHub 响应里的其它字段（body/published_at…）被忽略
+        let rel: Release =
+            serde_json::from_str(r#"{ "tag_name": "v1.0.0", "html_url": "u", "body": "notes" }"#)
+                .unwrap();
+        assert!(rel.assets.is_empty());
+        assert_eq!(display_version(&rel.tag_name), "1.0.0");
+    }
+}

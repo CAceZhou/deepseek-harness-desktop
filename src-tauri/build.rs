@@ -35,6 +35,10 @@ fn main() {
                 "copy_remote_link",
                 "get_remote_qr",
                 "reset_remote_link",
+                "check_update",
+                "download_update",
+                "install_update",
+                "open_update_page",
             ]),
         ),
     )

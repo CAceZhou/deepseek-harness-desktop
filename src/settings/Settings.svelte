@@ -1,5 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
+  import { listen } from '@tauri-apps/api/event'
+  import { getVersion } from '@tauri-apps/api/app'
   import { onMount } from 'svelte'
   import { t } from '../i18n'
 
@@ -16,6 +18,15 @@
     close_behavior: 'background' | 'quit'
     notify: NotifySettings
     completion_sound: CompletionSound
+    check_update_on_launch: boolean
+  }
+  // 与 Rust 端 update::UpdateInfo 对应
+  type UpdateInfo = {
+    current: string
+    latest: string
+    has_update: boolean
+    release_url: string
+    asset_size: number | null
   }
 
   // 与 Rust 端 ShellSettings::default 保持一致（三类通知默认均开、仅后台时提醒）
@@ -27,6 +38,7 @@
     close_behavior: 'background',
     notify: { approval: { ...DEFAULT_RULE }, question: { ...DEFAULT_RULE }, turn_done: { ...DEFAULT_RULE } },
     completion_sound: 'default',
+    check_update_on_launch: false,
   }
 
   // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
@@ -56,17 +68,45 @@
   let notify = $state<NotifySettings>(structuredClone(DEFAULTS.notify))
   let completionSound = $state<CompletionSound>('default')
   let autostart = $state(false)
+  let checkOnLaunch = $state(false)
   let recording = $state<'in' | 'out' | null>(null)
   let saving = $state(false)
   let notice = $state<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
-  onMount(async () => {
-    const [s, auto] = await Promise.all([
-      invoke<ShellSettings>('get_shell_settings'),
-      invoke<boolean>('get_autostart'),
-    ])
-    applyState(s)
-    autostart = auto
+  // 检查更新区块：idle → checking → latest / downloading → done / error
+  type UpdatePhase = 'idle' | 'checking' | 'latest' | 'downloading' | 'done' | 'error'
+  let appVersion = $state('')
+  let updatePhase = $state<UpdatePhase>('idle')
+  let updateVersion = $state('')
+  let updateName = $state('')
+  let updatePath = $state('')
+  let updateErr = $state('')
+  let dlDownloaded = $state(0)
+  let dlTotal = $state(0)
+
+  onMount(() => {
+    let unlisten: (() => void) | undefined
+    ;(async () => {
+      const [s, auto] = await Promise.all([
+        invoke<ShellSettings>('get_shell_settings'),
+        invoke<boolean>('get_autostart'),
+      ])
+      applyState(s)
+      autostart = auto
+      // 下载进度由后端 download_update 按百分比变化节流推送
+      unlisten = await listen<{ downloaded: number; total: number }>(
+        'update-download-progress',
+        (e) => {
+          if (updatePhase !== 'downloading') return
+          dlDownloaded = e.payload.downloaded
+          dlTotal = e.payload.total
+        },
+      )
+    })()
+    getVersion()
+      .then((v) => (appVersion = v))
+      .catch(() => {})
+    return () => unlisten?.()
   })
 
   function applyState(s: ShellSettings) {
@@ -76,6 +116,7 @@
     closeBehavior = s.close_behavior
     notify = structuredClone(s.notify)
     completionSound = s.completion_sound
+    checkOnLaunch = s.check_update_on_launch
   }
 
   const CODE_LABELS: Record<string, string> = {
@@ -148,6 +189,7 @@
         close_behavior: closeBehavior,
         notify,
         completion_sound: completionSound,
+        check_update_on_launch: checkOnLaunch,
       }
       await invoke('set_shell_settings', { next })
       await invoke('set_autostart', { enabled: autostart })
@@ -173,6 +215,51 @@
       notice = { kind: 'err', text: String(e) }
     }
   }
+
+  // 手动更新：检查到新版后直接下载安装包（不跳转浏览器），
+  // 进度条由 update-download-progress 事件驱动；完成后给出"立即安装"
+  async function manualUpdate() {
+    if (updatePhase === 'checking' || updatePhase === 'downloading') return
+    updatePhase = 'checking'
+    try {
+      const info = await invoke<UpdateInfo>('check_update')
+      appVersion = info.current
+      if (!info.has_update) {
+        updatePhase = 'latest'
+        return
+      }
+      updateVersion = info.latest
+      dlDownloaded = 0
+      dlTotal = info.asset_size ?? 0
+      updatePhase = 'downloading'
+      const path = await invoke<string>('download_update')
+      updatePath = path
+      updateName = path.split(/[\\/]/).pop() ?? path
+      updatePhase = 'done'
+    } catch (e) {
+      updateErr = String(e)
+      updatePhase = 'error'
+    }
+  }
+
+  async function openUpdatePage() {
+    try {
+      await invoke('open_update_page')
+    } catch (e) {
+      updateErr = String(e)
+      updatePhase = 'error'
+    }
+  }
+
+  // 启动已下载的 NSIS 安装包：其 preinstall 钩子会杀掉本进程树，属既定覆盖安装流程
+  async function installDownloaded() {
+    try {
+      await invoke('install_update', { path: updatePath })
+    } catch (e) {
+      updateErr = String(e)
+      updatePhase = 'error'
+    }
+  }
 </script>
 
 <main>
@@ -196,6 +283,48 @@
       <input type="radio" bind:group={closeBehavior} value="quit" />
       {t('退出程序')}
     </label>
+  </section>
+
+  <section class="card">
+    <h2>{t('检查更新')}</h2>
+    <label class="check">
+      <input type="checkbox" bind:checked={checkOnLaunch} />
+      {t('启动时自动检查更新')}
+    </label>
+    <div class="divider"></div>
+    <div class="row">
+      <span>{t('当前版本')} v{appVersion}</span>
+      <span class="control">
+        <button class="ghost small" onclick={openUpdatePage}>{t('GitHub 下载')}</button>
+        <button
+          class="ghost small"
+          onclick={manualUpdate}
+          disabled={updatePhase === 'checking' || updatePhase === 'downloading'}
+        >
+          {updatePhase === 'checking' ? t('正在检查更新…') : t('手动更新')}
+        </button>
+      </span>
+    </div>
+    {#if updatePhase !== 'idle'}
+      <div class="update-status">
+        {#if updatePhase === 'checking'}
+          <span class="status-text">{t('正在检查更新…')}</span>
+        {:else if updatePhase === 'latest'}
+          <span class="status-text ok">{t('当前已是最新版本')}</span>
+        {:else if updatePhase === 'downloading'}
+          {@const pct = dlTotal > 0 ? Math.min(Math.round((dlDownloaded / dlTotal) * 100), 100) : 0}
+          <span class="status-text">
+            {t('发现新版本 {ver}，正在下载…', { ver: updateVersion })}{dlTotal > 0 ? ` ${pct}%` : ''}
+          </span>
+          <div class="track"><div class="bar" style="width: {pct}%"></div></div>
+        {:else if updatePhase === 'done'}
+          <span class="status-text ok">{t('已下载：{name}', { name: updateName })}</span>
+          <button class="ghost small" onclick={installDownloaded}>{t('立即安装')}</button>
+        {:else if updatePhase === 'error'}
+          <span class="status-text err">{updateErr}</span>
+        {/if}
+      </div>
+    {/if}
   </section>
 
   <section class="card">
@@ -344,6 +473,41 @@
     box-sizing: border-box;
     padding: 0 12px;
     font-size: 12px;
+    border-radius: 6px;
+  }
+  .ghost.small:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .update-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .status-text {
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .status-text.ok {
+    color: var(--ok);
+  }
+  .status-text.err {
+    color: var(--bad);
+  }
+  /* 与启动画面同款的细进度条：border 底色 + accent 填充 */
+  .track {
+    flex: 1 1 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .bar {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width 0.25s ease-out;
   }
   .recorder {
     min-width: 170px;

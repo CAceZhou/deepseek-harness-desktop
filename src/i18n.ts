@@ -56,6 +56,16 @@ const en: Record<string, string> = {
   '已恢复默认值，点击保存生效': 'Defaults restored, click Save to apply',
   '快捷键必须包含 Ctrl/Shift/Alt 中至少一个修饰键': 'shortcut must include at least one modifier (Ctrl/Shift/Alt)',
   '放大与缩小快捷键不能相同': 'Zoom in and zoom out shortcuts must differ',
+  '检查更新': 'Check for updates',
+  '启动时自动检查更新': 'Check for updates on startup',
+  '当前版本': 'Current version',
+  '手动更新': 'Update now',
+  'GitHub 下载': 'GitHub download',
+  '正在检查更新…': 'Checking for updates…',
+  '当前已是最新版本': "You're on the latest version",
+  '发现新版本 {ver}，正在下载…': 'New version {ver} found, downloading…',
+  '已下载：{name}': 'Downloaded: {name}',
+  '立即安装': 'Install now',
 
   // 远程访问
   '远程访问': 'Remote Access',

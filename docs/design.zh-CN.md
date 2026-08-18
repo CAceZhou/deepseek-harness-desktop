@@ -346,3 +346,18 @@ scripts/fetch-runtime.ps1
 **UI**：托盘子菜单（开启/关闭互斥 enabled、复制链接、显示二维码、重置远程链接——复制/二维码/重置仅 Up 可用）+ `#/remote` 本地窗口（二维码 SVG 由 `qrcode` crate 生成、复制、重置（confirm 确认）、开关按钮）+ 诊断面板"远程访问"状态行。locale 切换重建托盘菜单后 `TrayRemoteItems` 句柄替换并按当前 phase 重设 enabled。
 
 **测试**：`tests/remote_proxy.rs`（门岗 403/302/种 cookie/转发/WS 桥接/503/shutdown 释放端口/插件 bundle 三元式改写/HTML 文档移动端样式与信息标签页脚本注入、无 </head> 透传）、`tests/remote_tunnel.rs`（fake-cloudflared.cjs：URL 解析、崩溃重启、stop）、`tests/remote_manager.rs`（缺 cloudflared 报 error、fixture dsh + 假隧道全链路 up→stop）。真隧道链路不进自动化（需外网），手动验收：托盘开启 → 手机扫码完整操作 dsh。
+
+## 17. 应用更新检查（update.rs）
+
+"其它设置 → 检查更新"卡片：手动更新 + "启动时自动检查更新"开关（settings.json `check_update_on_launch`，默认关）。
+
+**链路**：GitHub `releases/latest` API（`LBurny/deepseek-harness-desktop`）→ 比较 tag 与 `CARGO_PKG_VERSION` → 有新版则流式下载 `*_x64-setup.exe` 资产到系统下载目录（`.part` 写毕 rename，防半成品被当完整包）。版本比较自实现（去 `v` 前缀、`-rc`/`+build` 后缀忽略、逐段数值、短序列补 0；任一侧解析失败按"非新版"处理，宁漏报不误报），未引 semver crate。
+
+**要点**：
+
+- reqwest **走系统代理**（访问外网 GitHub，代理是通路必要条件；与 remote/proxy.rs 回环必须 `.no_proxy()` 正好相反）；GitHub API 必须带 User-Agent 否则 403
+- 检查 15s 超时；下载只设 connect 超时不设总超时（60MB 慢网）
+- 进度事件 `update-download-progress {downloaded,total}` 按百分比变化节流（同 lib.rs copy_cb），收尾强制 100%（content-length 与实际字节数可能不一致）
+- 4 个命令（check_update/download_update/install_update/open_update_page）走既有 ACL 三处同步（build.rs/capabilities/default.json；dsh-remote 不开）；未引入 opener 插件——`open_update_page` 用 rundll32 `FileProtocolHandler`（GUI 子系统不闪控制台），`install_update` 校验路径以 `_x64-setup.exe` 结尾后 spawn，NSIS preinstall 杀本进程树是既定覆盖安装流程
+- 启动时检查（开关开启时）在 setup 末尾 spawn：有新版弹 toast 指向其它设置页，失败只记 events.log
+- 单元测试只覆盖纯函数（版本解析/比较、资产选择、响应反序列化容错）；真实网络链路不进自动化，手动验收：其它设置 → 手动更新 → 进度条 → 立即安装
