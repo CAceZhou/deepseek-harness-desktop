@@ -4,9 +4,19 @@
 
 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（dsh，DeepSeek 的 agent harness CLI）的 Windows 桌面壳应用。安装包内嵌便携版 Node.js 运行时与 `@deepseek-ai/dsh`，dsh 官方 Web UI 像普通 Windows 应用一样运行，无需任何前置依赖。
 
+## 界面截图
+
+**桌面端**：原生窗口中的 dsh 官方 Web UI，跟随系统主题。
+
 | 深色 | 浅色 |
-| --- | --- |
-| ![深色](docs/screenshots/main-dark.png) | ![浅色](docs/screenshots/main-light.png) |
+| :---: | :---: |
+| ![DSHDesktop 桌面端，深色主题](docs/screenshots/main-dark.png) | ![DSHDesktop 桌面端，浅色主题](docs/screenshots/main-light.png) |
+
+**移动端**：托盘菜单一键开启远程访问，手机上获得完整 Web UI。
+
+<p align="center">
+  <img src="docs/screenshots/Iphone-ui.png" alt="手机上的 dsh Web UI：对话、通用设置与 Agent 预设" width="840">
+</p>
 
 ## 功能
 
