@@ -251,7 +251,8 @@
     }
   }
 
-  // 启动已下载的 NSIS 安装包：其 preinstall 钩子会杀掉本进程树，属既定覆盖安装流程
+  // 启动已下载的 NSIS 安装包；成功后壳会自行退出（安装器是壳的子进程，
+  // 壳不死则安装器钩子里的 taskkill 会连它一起杀掉），用户随后在安装向导里完成覆盖安装
   async function installDownloaded() {
     try {
       await invoke('install_update', { path: updatePath })

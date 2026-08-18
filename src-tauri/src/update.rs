@@ -252,10 +252,13 @@ pub async fn download_update(
     Ok(final_path.to_string_lossy().to_string())
 }
 
-/// 运行已下载的安装包。NSIS preinstall 钩子会 taskkill 本进程树——
-/// 覆盖安装的既定流程（见 windows/nsis-hooks.nsh），不是异常。
+/// 运行已下载的安装包，随后本进程走正常退出流程（quit_app：停 dsh、1.5s 后 exit）。
+/// 必须退出：安装包是本进程的子进程，而 NSIS 钩子会 taskkill 主程序——本进程不死，
+/// 旧版钩子的 /T 会连整棵进程树（含安装器与 _?= 原地运行的旧卸载器）一起杀掉，
+/// 覆盖安装中途凭空消失。本进程先死后，钩子找不到 DSHDesktop.exe，杀树无从谈起。
+/// （Job Object 不会误杀安装器：install_update 用裸 spawn，未挂进 KILL_ON_JOB_CLOSE。）
 #[tauri::command]
-pub fn install_update(path: String) -> Result<(), String> {
+pub fn install_update(app: AppHandle, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if !name.ends_with("_x64-setup.exe") || !p.is_file() {
@@ -269,6 +272,7 @@ pub fn install_update(path: String) -> Result<(), String> {
                 format!("Failed to launch the installer: {e}"),
             )
         })?;
+    crate::tray::quit_app(&app);
     Ok(())
 }
 
@@ -306,7 +310,7 @@ fn open_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 启动时自动检查（设置开启时，默认关）：有新版弹 toast 指向"其它设置 → 检查更新"；
+/// 启动时自动检查（设置开启时，默认关）：有新版弹 toast 提示到其它设置的检查更新下载；
 /// 失败只记 events.log，不打断启动、不打扰用户。
 pub async fn check_on_launch(app: AppHandle, log: PathBuf) {
     let client = match http_client() {
@@ -331,8 +335,8 @@ pub async fn check_on_launch(app: AppHandle, log: PathBuf) {
                     .builder()
                     .title(crate::i18n::pick("DSHDesktop 有新版本", "DSHDesktop update available"))
                     .body(crate::i18n::pick(
-                        format!("v{latest} 已发布，可在 其它设置 → 检查更新 中下载"),
-                        format!("v{latest} is available — get it in Other settings → Check for updates"),
+                        format!("v{latest} 已发布，请在其它设置的检查更新中下载"),
+                        format!("v{latest} is available, download it from Check for updates in Other settings"),
                     ))
                     .show();
             } else {
@@ -417,6 +421,27 @@ mod tests {
         )
         .unwrap();
         assert!(pick_setup_asset(&rel).is_none());
+    }
+
+    #[test]
+    fn nsis_hook_taskkill_never_kills_process_tree() {
+        // install_update 把安装包拉成本进程的子进程；NSIS 钩子里的 taskkill 若带 /T，
+        // 覆盖安装/升级时会连整棵进程树一起杀——包括安装器与 _?= 原地运行的旧卸载器
+        // 自身（点击"立即安装"后安装中途凭空消失）。子进程回收由 KILL_ON_JOB_CLOSE
+        // Job（>=0.1.9）与钩子里的按路径清扫（<=0.1.8 孤儿）兜底，/T 不得回归。
+        let hooks = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/windows/nsis-hooks.nsh"
+        ))
+        .unwrap();
+        let taskkill_line = hooks
+            .lines()
+            .find(|l| l.contains("taskkill.exe"))
+            .expect("preinstall hook must taskkill the running app");
+        assert!(
+            !taskkill_line.contains("/T"),
+            "taskkill must not kill the whole tree (installer self-kill): {taskkill_line}"
+        );
     }
 
     #[test]

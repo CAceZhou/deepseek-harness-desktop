@@ -15,10 +15,17 @@
 ; （从开始菜单/设置卸载不受影响：卸载器自我复制到 %TEMP% 运行，路径不匹配模式。）
 ; 排除方式取 PowerShell 父进程 PID（nsExec 直接 CreateProcess，父进程即调用方），
 ; 与可执行名无关。
+;
+; 0.1.17 修复：taskkill 去 /T 只杀主程序本身。"立即安装"（update.rs install_update）
+; 把安装包拉成 DSHDesktop.exe 的子进程，/T 会连整棵进程树一起杀——安装器与
+; _?= 原地运行的旧卸载器都在树上，覆盖安装中途全部凭空消失，新版本永远装不上。
+; 子进程回收不依赖 /T：>=0.1.9 的子进程全部挂在 KILL_ON_JOB_CLOSE Job 里，
+; 主程序一死内核连带回收；<=0.1.8 遗留孤儿由下面的按路径清扫兜底。
 
 !macro DSHDESKTOP_KILL_STRAY_RUNTIME_PROCESSES
-  ; 1) 主程序仍在运行：连整棵子进程树一起杀（/T 树、/F 强制）
-  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /T /IM DSHDesktop.exe'
+  ; 1) 主程序仍在运行：杀它（/F 强制），Job Object 随其死亡连带回收整棵子进程树。
+  ;    绝不能用 /T：会把"立即安装"拉起的安装器/旧卸载器（本进程的后代）一并杀掉。
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM DSHDesktop.exe'
   Pop $0
   Pop $1
   ; 2) 主程序已被强杀、只剩孤儿：按可执行路径清扫 $INSTDIR 下的所有残留进程
