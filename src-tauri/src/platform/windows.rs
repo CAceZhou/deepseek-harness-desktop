@@ -96,9 +96,14 @@ impl Platform for WindowsPlatform {
     }
 
     fn kill_process_tree(&self, pid: u32) {
-        // /T 杀进程树，/F 强制；失败忽略（进程可能已退出）
+        // /T 杀进程树，/F 强制；失败忽略（进程可能已退出）。
+        // taskkill 是控制台子系统程序：本进程是无控制台的 GUI 程序，不带
+        // CREATE_NO_WINDOW 系统会为它新分配一个可见控制台窗口（退出/重启时闪 cmd）。
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
     }
 

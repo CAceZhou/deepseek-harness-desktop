@@ -41,17 +41,37 @@ mod visible_console {
 
     /// pid → parent pid 映射
     fn parent_map() -> HashMap<u32, u32> {
-        let mut map = HashMap::new();
+        process_snapshot().0
+    }
+
+    /// pid → exe 文件名映射（如 "taskkill.exe"）
+    fn exe_names() -> HashMap<u32, String> {
+        process_snapshot().1
+    }
+
+    /// 一次 toolhelp 快照同时取回 (pid→parent, pid→exe 名) 两张表，保证二者一致
+    fn process_snapshot() -> (HashMap<u32, u32>, HashMap<u32, String>) {
+        let mut parents = HashMap::new();
+        let mut names = HashMap::new();
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if snap.is_null() || snap == -1isize as _ {
-                return map;
+                return (parents, names);
             }
             let mut pe: PROCESSENTRY32W = std::mem::zeroed();
             pe.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
             if Process32FirstW(snap, &mut pe) != 0 {
                 loop {
-                    map.insert(pe.th32ProcessID, pe.th32ParentProcessID);
+                    parents.insert(pe.th32ProcessID, pe.th32ParentProcessID);
+                    let len = pe
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(pe.szExeFile.len());
+                    names.insert(
+                        pe.th32ProcessID,
+                        String::from_utf16_lossy(&pe.szExeFile[..len]),
+                    );
                     if Process32NextW(snap, &mut pe) == 0 {
                         break;
                     }
@@ -59,7 +79,7 @@ mod visible_console {
             }
             CloseHandle(snap);
         }
-        map
+        (parents, names)
     }
 
     pub fn has_visible_console(target_pid: u32) -> bool {
@@ -68,6 +88,23 @@ mod visible_console {
             // 实测（Win10 22H2）：可见控制台窗口直接属主就是客户端进程本身；
             // 兼容旧模型：属主是 conhost.exe，其父进程才是客户端。
             owner == target_pid || parents.get(&owner) == Some(&target_pid)
+        })
+    }
+
+    /// 是否存在属主链指向 taskkill.exe 且该 taskkill 是 parent_pid 直属子进程的
+    /// 可见控制台窗口（kill_process_tree 闪窗回归测试的探针）
+    pub fn has_visible_taskkill_console(parent_pid: u32) -> bool {
+        let parents = parent_map();
+        let names = exe_names();
+        let is_taskkill =
+            |pid: u32| names.get(&pid).is_some_and(|n| n.eq_ignore_ascii_case("taskkill.exe"));
+        visible_console_owner_pids().iter().any(|&owner| {
+            let client = if is_taskkill(owner) {
+                Some(owner)
+            } else {
+                parents.get(&owner).copied().filter(|&p| is_taskkill(p))
+            };
+            client.is_some_and(|c| parents.get(&c) == Some(&parent_pid))
         })
     }
 }
@@ -171,4 +208,69 @@ fn spawned_child_with_new_console_has_visible_window() {
     let _ = child.kill();
 
     assert!(visible, "CREATE_NEW_CONSOLE 的子进程应有可见控制台窗口（对照组）");
+}
+
+/// 回归：kill_process_tree 起 taskkill 不得弹出可见控制台窗口（退出/重启时闪 cmd）。
+/// taskkill 是控制台子系统程序；DSHDesktop.exe 是 GUI 程序没有控制台，spawn 不带
+/// CREATE_NO_WINDOW 时系统会为 taskkill 新分配一个可见控制台窗口。
+/// 注意复现环境必须是"完全没有控制台"的父进程：CREATE_NO_WINDOW 只是隐藏控制台
+/// （子进程会静默继承，不产生新窗口），所以子分支先 FreeConsole() 挣脱继承来的
+/// 隐藏控制台，等价于 GUI 程序的环境；父进程侧轮询抓窗口。
+#[cfg(windows)]
+#[test]
+fn kill_process_tree_spawns_no_visible_console_window() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CHILD_ENV: &str = "DSHDESKTOP_KILL_TREE_CHILD";
+
+    if std::env::var_os(CHILD_ENV).is_some() {
+        // 挣脱隐藏控制台，成为真正无控制台进程（等价 DSHDesktop.exe 的 GUI 环境）
+        unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+        // 连续杀多棵树，拉长 taskkill 窗口的存在时间便于父进程捕获
+        for _ in 0..30 {
+            let sleeper = std::process::Command::new("ping.exe")
+                .args(["-n", "100", "127.0.0.1"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .expect("spawn sleeper");
+            platform::current().kill_process_tree(sleeper.id());
+        }
+        // 给父进程轮询留余量
+        std::thread::sleep(Duration::from_millis(500));
+        return;
+    }
+
+    let exe = std::env::current_exe().unwrap();
+    let mut child = std::process::Command::new(exe)
+        .arg("kill_process_tree_spawns_no_visible_console_window")
+        .args(["--exact", "--nocapture"])
+        .env(CHILD_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .expect("spawn console-less copy of test binary");
+    let child_pid = child.id();
+
+    let mut flashed = false;
+    loop {
+        if visible_console::has_visible_taskkill_console(child_pid) {
+            flashed = true;
+            break;
+        }
+        if child.try_wait().expect("try_wait").is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "无控制台子分支应正常跑完");
+    assert!(
+        !flashed,
+        "kill_process_tree 不得让 taskkill 弹出可见控制台窗口（退出闪 cmd）"
+    );
 }

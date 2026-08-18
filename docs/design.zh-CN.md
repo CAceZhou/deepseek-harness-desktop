@@ -209,7 +209,7 @@ pub trait Platform: Send + Sync {
     fn runtime_base_dir(&self) -> PathBuf;              // 应用数据根目录
     fn resource_runtime_dir(&self, resource_dir: &Path) -> PathBuf; // <res>/runtime/<triplet>
     fn runtime_triplet(&self) -> &'static str;          // "windows-x64" / "darwin-arm64" ...
-    fn kill_process_tree(&self, pid: u32);              // taskkill /T /F
+    fn kill_process_tree(&self, pid: u32);              // taskkill /T /F（同样带 CREATE_NO_WINDOW，否则退出/重启闪 cmd 窗口）
     fn configure_child_command(&self, _cmd: &mut Command) {} // CREATE_NO_WINDOW 等
     fn system_dark_mode(&self) -> bool;                 // 注册表 AppsUseLightTheme
 }
@@ -260,7 +260,7 @@ scripts/fetch-runtime.ps1
 | 进程集成测试（2，tests/process.rs） | 用 `tests/fixtures/fake-dsh.cjs`（可脚本化崩溃的假 dsh）验证 就绪→HTTP 200→stop、崩溃→自动重启→二次 Ready | 同上 |
 | 通知集成测试（2，tests/notify_ws.rs） | fixture 双 WS 端点发事件帧，验证 approval 过滤、turn/end 完成通知（含标题）、子代理过滤 | 同上 |
 | 远程访问集成测试（12，tests/remote_{proxy,tunnel,manager}.rs） | 门岗 403/302/cookie/转发/浏览器标记头剥离（防 dsh 信任栅栏 403）/WS 桥接/503/停服释放端口、fake-cloudflared URL 解析与崩溃重启、manager 全链路（缺文件 error、up→stop、start 幂等） | 同上 |
-| 控制台窗口回归（2，tests/console_window.rs） | 正组：CREATE_NO_WINDOW 的子进程**无可见** ConsoleWindowClass 窗口；对照组：CREATE_NEW_CONSOLE 的子进程**有**（证明检测有效，屏幕上会短暂弹真实控制台窗口，属正常） | 同上 |
+| 控制台窗口回归（3，tests/console_window.rs） | 正组：CREATE_NO_WINDOW 的子进程**无可见** ConsoleWindowClass 窗口；对照组：CREATE_NEW_CONSOLE 的子进程**有**（证明检测有效，屏幕上会短暂弹真实控制台窗口，属正常）；kill_process_tree 闪窗回归：无控制台父进程（CREATE_NO_WINDOW 重拉自身 + FreeConsole）里连杀 30 棵树，断言全程抓不到 taskkill 的可见控制台窗口 | 同上 |
 | 端到端验收（scripts/acceptance.ps1） | 卸载旧版 → 静默安装 → 启动 → 等 dsh 就绪 → 单实例/无可见控制台/主题/截图 全项校验 | `powershell -File scripts/acceptance.ps1 -SetupExe <exe>` |
 
 改进程/通知/主题逻辑后：`cargo test` + 重装走一遍 acceptance.ps1。

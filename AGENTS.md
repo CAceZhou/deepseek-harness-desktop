@@ -135,7 +135,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 - **dsh 事实**：Node `^22.19 || >=24`；入口 `lib/bin.js`；`dsh web` 只许绑 127.0.0.1；事件走 **WebSocket** `/api/events.mux` + `/api/events.host`（GET 返回 426），帧格式 `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定看 `session/event` 里的 `turn/end`（`data.reason.kind=="completed"`），子代理标记看 `host/session-added` 的 `origin`；设置在 `$DSH_HOME/settings.yaml` 的 `ui-theme.preference`（light/dark/system）
 - **运行时布局**：暂存 `src-tauri/runtime/<triplet>/`，tauri.conf `resources: ["runtime"]`，安装后 `<install>/runtime/<triplet>/`；`bundle.resources` 相对路径原样映射（`..` 会变 `_up_`，别用）
-- **子进程控制台**：`Platform::configure_child_command` 设 CREATE_NO_WINDOW；验收判据是**可见 ConsoleWindowClass 窗口**（conhost 进程存在≠窗口可见）
+- **子进程控制台**：`Platform::configure_child_command` 设 CREATE_NO_WINDOW；`kill_process_tree` 的 taskkill 同样必须带（它是控制台子系统程序，GUI 主进程没有控制台，不带标志系统会为它新分配可见控制台窗口——退出/重启时闪 cmd）。复现"无控制台父进程"不能用 CREATE_NO_WINDOW 拉中间进程（那只是**隐藏**控制台，子孙会静默继承、不产生新窗口），须在中间进程里 FreeConsole()。验收判据是**可见 ConsoleWindowClass 窗口**（conhost 进程存在≠窗口可见）
 - **PowerShell 5.1**：含中文的 .ps1 必须 UTF-8 **带 BOM**（注意 ZCode Edit 工具改完会丢 BOM，须补回）；别用 PS 改写 `settings.yaml`（会引入 BOM 导致 yaml-rust 解析失败，主题静默回退）
 - **脚本里别用 Process.MainWindowHandle**：debug exe 还持有可见控制台与 Tao/托盘辅助窗口，句柄会指错；按 class "Tauri Window" 枚举进程顶层窗口（verify-no-size-flash.ps1 / verify-window-state.ps1 的 FindByClass 模式）
 - **Tauri setup 无 tokio 上下文**：spawn_supervised 必须经 `tauri::async_runtime::block_on`
@@ -167,7 +167,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 146 个）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 147 个）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 
