@@ -89,7 +89,7 @@ DSHDesktop\
 
 ## 5. 运行时管理
 
-**背景**：安装包把运行时原样放在 `<install>\runtime\windows-x64\`（tauri.conf `resources: ["runtime"]` 做相对路径映射）。早期设计是首次启动时把整个运行时复制到 `%LOCALAPPDATA%`（防只读安装目录），代价是安装后体积翻倍（约 +230MB）。
+**背景**：安装包把运行时原样放在 `<install>\runtime\windows-x64\`（tauri.conf `resources` 映射：`"runtime" -> "runtime"`、`"resources/sounds" -> "sounds"`；列表形式会把 `resources/sounds` 原样放到 `<install>/resources/sounds/`，而壳在 exe 旁找 `sounds/*.wav`（`resolve_custom_sound`），探测不到自定义提示音就静默降级系统默认——0.1.16 实踩，`settings.rs` 有锚定测试）。早期设计是首次启动时把整个运行时复制到 `%LOCALAPPDATA%`（防只读安装目录），代价是安装后体积翻倍（约 +230MB）。
 
 **现状：两级策略**
 
@@ -243,7 +243,7 @@ scripts/fetch-runtime.ps1
 - `pnpm tauri build` → NSIS `src-tauri/target/release/bundle/nsis/DSHDesktop_<ver>_x64-setup.exe`。
 - WebView2：缺失时安装程序联网下载安装（downloadBootstrapper 模式），因此安装包本体不含 WebView2。
 - 静默安装：`setup.exe /S`（加 `/D=<dir>` 指定目录）。运行中的旧实例由安装器自动结束，无需手动卸载或杀进程。
-- NSIS 钩子（`src-tauri/windows/nsis-hooks.nsh`，经 `bundle.windows.nsis.installerHooks` 接入，**路径相对 `src-tauri`**）：`NSIS_HOOK_PREINSTALL`/`NSIS_HOOK_PREUNINSTALL` 先 `taskkill /F /T /IM DSHDesktop.exe` 杀整棵树，再用 PowerShell 按可执行路径清扫 `$INSTDIR` 下的所有残留进程（≤0.1.8 遗留的孤儿 node.exe/cloudflared.exe），然后轮询等进程退净（≤10s）等内核回收句柄。Tauri 模板自带的 `CheckIfAppIsRunning` 只杀主程序，杀不动子进程，单靠它必然复现 "Can't write" 失败。**清扫必须排除调用方自身**（取 PowerShell 父进程 PID）：覆盖安装/升级时模板在 `PageLeaveReinstall` 以 `_?=$INSTDIR` 原地运行旧卸载器，`$INSTDIR\uninstall.exe` 同样匹配 `$INSTDIR\*` 模式——0.1.9~0.1.12 没排除，卸载器把自己杀了，文件没删、退出码非零，新安装器弹 "Unable to uninstall!" 中止；独立卸载（设置/开始菜单）会自我复制到 %TEMP% 运行所以从不触发。`NSIS_HOOK_POSTUNINSTALL` 再 `RMDir /r "$INSTDIR\runtime"` 兜底清单外残留（dsh 自更新新增的文件不在卸载清单里），模板的空目录 RMDir 才能收掉 `$INSTDIR`。已知问题：≤0.1.12 升级 ≥0.1.13 会最后一次弹该对话框（旧卸载器无法被新安装器修复），先在系统设置里卸载再装即可。
+- NSIS 钩子（`src-tauri/windows/nsis-hooks.nsh`，经 `bundle.windows.nsis.installerHooks` 接入，**路径相对 `src-tauri`**）：`NSIS_HOOK_PREINSTALL`/`NSIS_HOOK_PREUNINSTALL` 先 `taskkill /F /IM DSHDesktop.exe` 杀主程序（**绝不带 `/T`**：立即安装拉起的安装器与 `_?=` 原地运行的旧卸载器都是 DSHDesktop.exe 的后代，/T 会把它们一并杀掉——0.1.16 及以前"立即安装"装不上即此因；≥0.1.9 的子进程由 KILL_ON_JOB_CLOSE Job 随主程序死亡被内核连带回收，杀树本就多余），再用 PowerShell 按可执行路径清扫 `$INSTDIR` 下的所有残留进程（≤0.1.8 遗留的孤儿 node.exe/cloudflared.exe），然后轮询等进程退净（≤10s）等内核回收句柄。Tauri 模板自带的 `CheckIfAppIsRunning` 只杀主程序，杀不动子进程，单靠它必然复现 "Can't write" 失败。**清扫必须排除调用方自身**（取 PowerShell 父进程 PID）：覆盖安装/升级时模板在 `PageLeaveReinstall` 以 `_?=$INSTDIR` 原地运行旧卸载器，`$INSTDIR\uninstall.exe` 同样匹配 `$INSTDIR\*` 模式——0.1.9~0.1.12 没排除，卸载器把自己杀了，文件没删、退出码非零，新安装器弹 "Unable to uninstall!" 中止；独立卸载（设置/开始菜单）会自我复制到 %TEMP% 运行所以从不触发。`NSIS_HOOK_POSTUNINSTALL` 再 `RMDir /r "$INSTDIR\runtime"` 兜底清单外残留（dsh 自更新新增的文件不在卸载清单里），模板的空目录 RMDir 才能收掉 `$INSTDIR`。已知问题：≤0.1.12 升级 ≥0.1.13 会最后一次弹该对话框（旧卸载器无法被新安装器修复），先在系统设置里卸载再装即可。
 - 国内构建机直连 GitHub 不稳时，NSIS 下载可用 ghproxy 预置 `%LOCALAPPDATA%\tauri\NSIS`（细节见 AGENTS.md）。
 
 ### CI 与发布
@@ -358,6 +358,6 @@ scripts/fetch-runtime.ps1
 - reqwest **走系统代理**（访问外网 GitHub，代理是通路必要条件；与 remote/proxy.rs 回环必须 `.no_proxy()` 正好相反）；GitHub API 必须带 User-Agent 否则 403
 - 检查 15s 超时；下载只设 connect 超时不设总超时（60MB 慢网）
 - 进度事件 `update-download-progress {downloaded,total}` 按百分比变化节流（同 lib.rs copy_cb），收尾强制 100%（content-length 与实际字节数可能不一致）
-- 4 个命令（check_update/download_update/install_update/open_update_page）走既有 ACL 三处同步（build.rs/capabilities/default.json；dsh-remote 不开）；未引入 opener 插件——`open_update_page` 用 rundll32 `FileProtocolHandler`（GUI 子系统不闪控制台），`install_update` 校验路径以 `_x64-setup.exe` 结尾后 spawn，NSIS preinstall 杀本进程树是既定覆盖安装流程
+- 4 个命令（check_update/download_update/install_update/open_update_page）走既有 ACL 三处同步（build.rs/capabilities/default.json；dsh-remote 不开）；未引入 opener 插件——`open_update_page` 用 rundll32 `FileProtocolHandler`（GUI 子系统不闪控制台），`install_update` 校验路径以 `_x64-setup.exe` 结尾后 spawn，随后走 `quit_app` 让本进程先行退出（安装器是本进程子进程，旧版钩子的 `taskkill /T` 会连它一起杀；本进程先死，钩子杀树即成空操作），用户在向导里完成覆盖安装
 - 启动时检查（开关开启时）在 setup 末尾 spawn：有新版弹 toast 指向其它设置页，失败只记 events.log
 - 单元测试只覆盖纯函数（版本解析/比较、资产选择、响应反序列化容错）；真实网络链路不进自动化，手动验收：其它设置 → 手动更新 → 进度条 → 立即安装

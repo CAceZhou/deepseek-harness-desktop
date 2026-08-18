@@ -70,7 +70,9 @@ src-tauri/src/
                     外网场景，与回环必须 no_proxy 相反）、版本比较（自实现，
                     解析失败按非新版）、下载 *_x64-setup.exe 到系统下载目录
                     （.part→rename，百分比节流 emit update-download-progress）、
-                    install_update 起 NSIS（preinstall 杀本进程树是既定流程）、
+                    install_update 起 NSIS 后走 quit_app 自行退出——安装器是
+                    本进程子进程，旧版钩子的 taskkill /T 会连它一起杀（立即安装
+                    曾因此装不上）；本进程先死，钩子杀树即成空操作）、
                     open_update_page 用 rundll32 开 releases 页（不引 opener 插件）；
                     启动时检查默认关，有新版弹 toast，失败只记 events.log；4 命令
   remote/           远程访问：mod.rs=RemoteManager(生命周期/token/6 命令；reset_link
@@ -101,7 +103,8 @@ src/                splash/Splash.svelte、diagnostics/Diagnostics.svelte、
                     mcp/Mcp.svelte、remote/Remote.svelte、App.svelte(hash 路由)
 src-tauri/windows/  nsis-hooks.nsh：NSIS 安装/卸载钩子（bundle.windows.nsis.installerHooks
                     接入，路径相对 src-tauri）；preinstall/preuninstall 先
-                    taskkill /F /T /IM DSHDesktop.exe 杀整树，再按可执行路径清扫
+                    taskkill /F /IM 杀主程序（绝不带 /T：安装器/旧卸载器可能
+                    在树上被误杀；子进程回收靠 Job Object），再按可执行路径清扫
                     $INSTDIR 下残留进程（≤0.1.8 遗留孤儿）——清扫必须排除调用方自身
                     （父进程 PID）：覆盖安装时模板以 `_?=$INSTDIR` 原地运行旧卸载器，
                     其路径同样匹配 $INSTDIR\*，0.1.9~0.1.12 会误杀卸载器自身致
@@ -137,7 +140,11 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
   已达成即 Ok（commands.rs 有锚定测试）
 
 - **dsh 事实**：Node `^22.19 || >=24`；入口 `lib/bin.js`；`dsh web` 只许绑 127.0.0.1；事件走 **WebSocket** `/api/events.mux` + `/api/events.host`（GET 返回 426），帧格式 `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定看 `session/event` 里的 `turn/end`（`data.reason.kind=="completed"`），子代理标记看 `host/session-added` 的 `origin`；设置在 `$DSH_HOME/settings.yaml` 的 `ui-theme.preference`（light/dark/system）
-- **运行时布局**：暂存 `src-tauri/runtime/<triplet>/`，tauri.conf `resources: ["runtime"]`，安装后 `<install>/runtime/<triplet>/`；`bundle.resources` 相对路径原样映射（`..` 会变 `_up_`，别用）
+- **运行时布局**：暂存 `src-tauri/runtime/<triplet>/`，tauri.conf `resources` 用映射形式
+  `{ "runtime": "runtime", "resources/sounds": "sounds" }`，安装后 `<install>/runtime/<triplet>/`
+  与 `<install>/sounds/*.wav`（自定义提示音在 exe 旁/资源根找 `sounds/`，映射让它们落对位——
+  列表形式会把 `resources/sounds` 原样放 `<install>/resources/sounds/`，探测不到即降级系统默认，
+  0.1.16 实踩；`settings.rs` 有锚定测试）；`bundle.resources` 相对路径映射（`..` 会变 `_up_`，别用）
 - **子进程控制台**：`Platform::configure_child_command` 设 CREATE_NO_WINDOW；`kill_process_tree` 的 taskkill 同样必须带（它是控制台子系统程序，GUI 主进程没有控制台，不带标志系统会为它新分配可见控制台窗口——退出/重启时闪 cmd）。复现"无控制台父进程"不能用 CREATE_NO_WINDOW 拉中间进程（那只是**隐藏**控制台，子孙会静默继承、不产生新窗口），须在中间进程里 FreeConsole()。验收判据是**可见 ConsoleWindowClass 窗口**（conhost 进程存在≠窗口可见）
 - **PowerShell 5.1**：含中文的 .ps1 必须 UTF-8 **带 BOM**（注意 ZCode Edit 工具改完会丢 BOM，须补回）；别用 PS 改写 `settings.yaml`（会引入 BOM 导致 yaml-rust 解析失败，主题静默回退）
 - **脚本里别用 Process.MainWindowHandle**：debug exe 还持有可见控制台与 Tao/托盘辅助窗口，句柄会指错；按 class "Tauri Window" 枚举进程顶层窗口（verify-no-size-flash.ps1 / verify-window-state.ps1 的 FindByClass 模式）
@@ -170,7 +177,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 147 个）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 158 个）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 
