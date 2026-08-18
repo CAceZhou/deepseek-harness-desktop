@@ -52,8 +52,11 @@ src-tauri/src/
   skills.rs         技能管理：DSH_HOME(壳注入，非~/.dsh)的 skills/(启用) ↔
                     skills-disabled/(停用) 目录移动即开关（dsh watcher 热刷新）；
                     启动自动种子 ~/.dsh/skills(.skills-seeded marker 防复活)；
-                    三源导入(codex/claude/opencode)、冲突覆盖/跳过、删除；
-                    5 个命令 + SkillsHome 状态
+                    三源导入(codex/claude/opencode)+ZIP 本地导入
+                    (inspect_zip_skills 识别包根 SKILL.md/顶层技能文件夹两种布局,
+                    解包剥前缀+enclosed_name 防穿越+1万条目/256MB 上限;
+                    前端经 tauri-plugin-dialog 选文件)、冲突覆盖/跳过、删除；
+                    7 个命令 + SkillsHome 状态
   mcp.rs            MCP 管理：读写 dsh-home/profiles/web/cordis.patch.yml 中
                     name=='@deepseek-ai/dsh-mcp-client' 的 insert 条目（其余条目
                     Value 级保留，tmp+rename 原子写，BOM 容忍）；启停=entry 上

@@ -88,9 +88,12 @@ const en: Record<string, string> = {
   // 技能管理
   '技能管理': 'Skills',
   '从外部 Agent 导入': 'Import from external agents',
+  '本地导入 ZIP': 'Import local ZIP',
+  '导入 ZIP 技能': 'Import skills from ZIP',
+  '选择技能压缩包': 'Select a skill archive',
+  '尚无技能，点击右上角「从外部 Agent 导入」或「本地导入 ZIP」开始。': 'No skills yet. Click "Import from external agents" or "Import local ZIP" to get started.',
   '启用后可在 dsh 会话中通过技能名使用；开关即时生效，无需重启服务。': 'Enabled skills are usable by name in dsh sessions; toggling takes effect immediately.',
   '加载中…': 'Loading…',
-  '尚无技能，点击右上角「从外部 Agent 导入」开始。': 'No skills yet. Click "Import from external agents" to get started.',
   '已启用': 'Enabled',
   '已停用': 'Disabled',
   '删除': 'Delete',

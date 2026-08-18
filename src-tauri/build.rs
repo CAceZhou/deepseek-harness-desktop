@@ -23,6 +23,8 @@ fn main() {
                 "import_skills",
                 "set_skill_enabled",
                 "delete_skill",
+                "inspect_zip_skills",
+                "import_zip_skills",
                 "list_mcp_servers",
                 "upsert_mcp_server",
                 "set_mcp_enabled",

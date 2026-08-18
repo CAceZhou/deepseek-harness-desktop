@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
+  import { open } from '@tauri-apps/plugin-dialog'
   import { onMount } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
   import { t } from '../i18n'
@@ -23,6 +24,17 @@
 
   let selectedSource = $derived(sources.find((s) => s.id === selectedSourceId))
   let importableCount = $derived(checked.size)
+
+  // ZIP 导入弹窗状态
+  let showZip = $state(false)
+  let zipPath = $state('')
+  let zipSkills = $state<SourceSkill[]>([])
+  let zipChecked = new SvelteSet<string>()
+  let zipOverwrite = new SvelteSet<string>()
+  let zipImporting = $state(false)
+
+  let zipFileName = $derived(zipPath.split(/[\\/]/).pop() ?? zipPath)
+  let zipImportableCount = $derived(zipChecked.size)
 
   onMount(load)
 
@@ -104,12 +116,65 @@
       importing = false
     }
   }
+
+  async function pickZip() {
+    notice = null
+    const selected = await open({
+      title: t('选择技能压缩包'),
+      multiple: false,
+      filters: [{ name: 'ZIP', extensions: ['zip'] }],
+    })
+    if (!selected) return // 用户取消
+    try {
+      const skills = await invoke<SourceSkill[]>('inspect_zip_skills', { path: selected })
+      zipPath = selected
+      zipSkills = skills
+      zipChecked.clear()
+      zipOverwrite.clear()
+      for (const s of skills) zipChecked.add(s.name) // 用户选了包，默认全导；冲突项默认"跳过"
+      showZip = true
+    } catch (e) {
+      notice = { kind: 'err', text: String(e) }
+    }
+  }
+
+  function toggleZipChecked(name: string, on: boolean) {
+    if (on) zipChecked.add(name)
+    else {
+      zipChecked.delete(name)
+      zipOverwrite.delete(name)
+    }
+  }
+
+  async function confirmZipImport() {
+    zipImporting = true
+    try {
+      const items = [...zipChecked].map((name) => ({ name, overwrite: zipOverwrite.has(name) }))
+      const results = await invoke<ImportResult[]>('import_zip_skills', { path: zipPath, items })
+      const ok = results.filter((r) => r.status === 'imported').length
+      const skipped = results.filter((r) => r.status === 'skipped').length
+      const failed = results.filter((r) => r.status === 'error')
+      const parts = [t('导入完成', { count: ok })]
+      if (skipped) parts.push(t('跳过完成', { count: skipped }))
+      if (failed.length) parts.push(t('失败完成', { count: failed.length, err: failed[0].error ?? '' }))
+      notice = { kind: failed.length ? 'err' : 'ok', text: parts.join('，') }
+      showZip = false
+      await load()
+    } catch (e) {
+      notice = { kind: 'err', text: String(e) }
+    } finally {
+      zipImporting = false
+    }
+  }
 </script>
 
 <main>
   <header>
     <h1>{t('技能管理')}</h1>
-    <button class="primary" onclick={openImport}>{t('从外部 Agent 导入')}</button>
+    <div class="actions">
+      <button class="ghost" onclick={pickZip}>{t('本地导入 ZIP')}</button>
+      <button class="primary" onclick={openImport}>{t('从外部 Agent 导入')}</button>
+    </div>
   </header>
 
   <p class="tip">{t('启用后可在 dsh 会话中通过技能名使用；开关即时生效，无需重启服务。')}</p>
@@ -118,7 +183,7 @@
     {#if loading}
       <p class="empty">{t('加载中…')}</p>
     {:else if rows.length === 0}
-      <p class="empty">{t('尚无技能，点击右上角「从外部 Agent 导入」开始。')}</p>
+      <p class="empty">{t('尚无技能，点击右上角「从外部 Agent 导入」或「本地导入 ZIP」开始。')}</p>
     {:else}
       {#each rows as row (row.name)}
         <div class="row" class:disabled={!row.enabled}>
@@ -211,6 +276,62 @@
   </div>
 {/if}
 
+{#if showZip}
+  <div class="overlay" onclick={() => (showZip = false)} role="presentation">
+    <div
+      class="modal"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.key === 'Escape' && (showZip = false)}
+      role="dialog"
+      tabindex="-1"
+    >
+      <h2>{t('导入 ZIP 技能')}</h2>
+      <div class="field">
+        <span>ZIP</span>
+        <span class="zip-name" title={zipPath}>{zipFileName}</span>
+      </div>
+      <div class="pick-list">
+        {#each zipSkills as sk (sk.name)}
+          <div class="pick-row">
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={zipChecked.has(sk.name)}
+                onchange={(e) => toggleZipChecked(sk.name, (e.target as HTMLInputElement).checked)}
+              />
+              <span class="meta">
+                <b>{sk.name}</b>
+                <span class="desc">{sk.description || t('（无描述）')}</span>
+              </span>
+            </label>
+            {#if sk.conflict && zipChecked.has(sk.name)}
+              <select
+                class="conflict-choice"
+                value={zipOverwrite.has(sk.name) ? 'overwrite' : 'skip'}
+                onchange={(e) => {
+                  if ((e.target as HTMLSelectElement).value === 'overwrite') zipOverwrite.add(sk.name)
+                  else zipOverwrite.delete(sk.name)
+                }}
+              >
+                <option value="skip">{t('跳过')}</option>
+                <option value="overwrite">{t('覆盖')}</option>
+              </select>
+            {:else if sk.conflict}
+              <span class="conflict-tag">{t('已存在')}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+      <div class="modal-actions">
+        <button class="ghost" onclick={() => (showZip = false)}>{t('取消')}</button>
+        <button class="primary" disabled={zipImporting || zipImportableCount === 0} onclick={confirmZipImport}>
+          {zipImporting ? t('导入中…') : t('导入完成', { count: zipImportableCount })}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   main {
     padding: 20px 24px;
@@ -225,6 +346,10 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+  }
+  .actions {
+    display: flex;
+    gap: 10px;
   }
   h1 {
     font-size: 18px;
@@ -403,6 +528,14 @@
   }
   .field select {
     flex: 1;
+  }
+  .zip-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
   }
   .pick-list {
     border: 1px solid var(--border);

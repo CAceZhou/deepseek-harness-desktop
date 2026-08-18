@@ -55,6 +55,8 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // 原生文件对话框（技能管理"本地导入 ZIP"选文件用）
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_shell_ui_state,
             commands::get_status,
@@ -73,6 +75,8 @@ pub fn run() {
             skills::import_skills,
             skills::set_skill_enabled,
             skills::delete_skill,
+            skills::inspect_zip_skills,
+            skills::import_zip_skills,
             mcp::list_mcp_servers,
             mcp::upsert_mcp_server,
             mcp::set_mcp_enabled,
