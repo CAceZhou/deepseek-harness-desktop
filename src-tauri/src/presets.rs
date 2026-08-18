@@ -19,10 +19,37 @@ use std::path::Path;
 
 /// 补丁标记：写入文件首行注释，幂等判定用。
 const MARKER: &str = "dshdesktop: win32 pwsh variant v1";
-/// 破损签名：文件引用了 PTY 持久 bash 工具。
-const BROKEN_NEEDLE: &str = "dsh-tool-bash-persistent";
-/// 上游若引入平台分支（内容出现 win32），视为已自行修复，不再覆盖。
-const PLATFORM_NEEDLE: &str = "win32";
+
+/// minimal 预设的签名状态（只读，不改写）。patch_minimal_preset 与
+/// tests/upstream_contract.rs 共用同一判定——契约测试靠它回答
+/// "上游这版还需不需要我方补丁"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureState {
+    /// 含破损签名且无平台分支：需要我方补丁。
+    NeedsPatch,
+    /// marker 已在：补丁已生效。
+    AlreadyPatched,
+    /// 上游已含平台分支或形态变化：补丁停手。
+    UpstreamHandled,
+    /// 预设文件缺失（fixture 运行时等布局）。
+    Missing,
+}
+
+pub fn preset_signature_state(preset_dir: &Path) -> SignatureState {
+    let composition = preset_dir.join(crate::upstream::PRESET_COMPOSITION_FILE);
+    let Ok(content) = fs::read_to_string(&composition) else {
+        return SignatureState::Missing;
+    };
+    if content.contains(MARKER) {
+        return SignatureState::AlreadyPatched;
+    }
+    if !content.contains(crate::upstream::PRESET_BROKEN_NEEDLE)
+        || content.contains(crate::upstream::PRESET_PLATFORM_NEEDLE)
+    {
+        return SignatureState::UpstreamHandled;
+    }
+    SignatureState::NeedsPatch
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchOutcome {
@@ -46,7 +73,7 @@ pub fn patch_minimal_preset(paths: &RuntimePaths) -> PatchOutcome {
     let Some(pkg_dir) = paths.dsh_bin.parent().and_then(|p| p.parent()) else {
         return PatchOutcome::Missing;
     };
-    let dir = pkg_dir.join("config").join("agent-presets").join("minimal");
+    let dir = crate::upstream::join_segments(pkg_dir, crate::upstream::PRESET_DIR_SEGMENTS);
     match patch_dir(&dir) {
         Ok(o) => o,
         Err(_) => PatchOutcome::Missing,
@@ -54,18 +81,16 @@ pub fn patch_minimal_preset(paths: &RuntimePaths) -> PatchOutcome {
 }
 
 fn patch_dir(dir: &Path) -> std::io::Result<PatchOutcome> {
-    let composition = dir.join("agent.cordis.yml");
-    if !composition.is_file() {
-        return Ok(PatchOutcome::Missing);
+    match preset_signature_state(dir) {
+        SignatureState::Missing => return Ok(PatchOutcome::Missing),
+        SignatureState::AlreadyPatched => return Ok(PatchOutcome::AlreadyPatched),
+        SignatureState::UpstreamHandled => return Ok(PatchOutcome::UpstreamChanged),
+        SignatureState::NeedsPatch => {}
     }
-    let content = fs::read_to_string(&composition)?;
-    if content.contains(MARKER) {
-        return Ok(PatchOutcome::AlreadyPatched);
-    }
-    if !content.contains(BROKEN_NEEDLE) || content.contains(PLATFORM_NEEDLE) {
-        return Ok(PatchOutcome::UpstreamChanged);
-    }
-    write_atomic(&composition, WIN32_COMPOSITION)?;
+    write_atomic(
+        &dir.join(crate::upstream::PRESET_COMPOSITION_FILE),
+        WIN32_COMPOSITION,
+    )?;
     // 简介里"持久 bash"在 Windows 变体下不再准确，同步改写（缺失则不管）。
     let meta = dir.join("preset.yml");
     if meta.is_file() {
@@ -165,13 +190,33 @@ mod tests {
     }
 
     #[test]
+    fn signature_state_classification() {
+        let dir = make_preset();
+        assert_eq!(preset_signature_state(dir.path()), SignatureState::NeedsPatch);
+        patch_dir(dir.path()).unwrap();
+        assert_eq!(preset_signature_state(dir.path()), SignatureState::AlreadyPatched);
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(preset_signature_state(empty.path()), SignatureState::Missing);
+        let fixed = tempfile::tempdir().unwrap();
+        fs::write(
+            fixed.path().join("agent.cordis.yml"),
+            UPSTREAM_COMPOSITION.replace(
+                "name: '@deepseek-ai/dsh-tool-bash-persistent'",
+                "name: '@deepseek-ai/dsh-tool-bash-persistent'\n      disabled: !!js process.platform === 'win32'",
+            ),
+        )
+        .unwrap();
+        assert_eq!(preset_signature_state(fixed.path()), SignatureState::UpstreamHandled);
+    }
+
+    #[test]
     fn patches_broken_upstream() {
         let dir = make_preset();
         assert_eq!(patch_dir(dir.path()).unwrap(), PatchOutcome::Patched);
         let c = fs::read_to_string(dir.path().join("agent.cordis.yml")).unwrap();
         assert!(c.contains(MARKER));
         assert!(c.contains("dsh-tool-pwsh"));
-        assert!(!c.contains(BROKEN_NEEDLE), "PTY bash 行应被移除");
+        assert!(!c.contains(crate::upstream::PRESET_BROKEN_NEEDLE), "PTY bash 行应被移除");
         assert!(c.contains("{{cwd}}"), "persona 应告知工作目录");
         // 文件系统组原样保留
         assert!(c.contains("dsh-fs-local") && c.contains("str-replace-editor"));

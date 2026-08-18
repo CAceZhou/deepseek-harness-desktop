@@ -23,7 +23,13 @@ src-tauri/src/
   presets.rs        启动期修复 shipped minimal(极简模式)预设：rc 里它无条件挂载 PTY
                     持久 bash，而终端检查器未实现 win32 → 必抛 terminal inspection 错；
                     原地改写为 tool-pwsh 变体（persona 补 {{cwd}} 与 PowerShell 事实），
-                    签名门控(上游加 win32 分支即停手)+marker 幂等，spawn 前完成
+                    签名门控(上游加 win32 分支即停手)+marker 幂等，spawn 前完成；
+                    只读判定 preset_signature_state 与契约套件共用
+  upstream.rs       dsh 上游内部事实单一来源（入口/命令形/WS 端点与帧/设置键/
+                    cordis patch/预设签名/改写 needle，每条注明出处与影响面）；
+                    跟版红了只改这一个文件；tests/upstream_contract.rs 对真实运行时
+                    逐项探测（无运行时自动 skip，CI 里 fetch-runtime 在 cargo test
+                    之前故必真跑），DRIFT 输出直接指出改哪条常量、影响哪个模块
   platform/         平台抽象 trait（多平台预留）；windows.rs 实现（含 job 模块：
                     全局 KILL_ON_JOB_CLOSE Job Object，register_child 把每个子进程挂进去，
                     父进程被强杀时内核连带回收整树，防孤儿锁 runtime）；macos/linux 待实现
@@ -126,7 +132,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（125 个：单元+进程集成+WS通知+控制台窗口+远程访问）
+cd src-tauri && cargo test            # 全部测试（160 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -177,7 +183,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 158 个）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 160 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 

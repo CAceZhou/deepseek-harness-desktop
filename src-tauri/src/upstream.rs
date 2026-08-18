@@ -1,0 +1,92 @@
+//! dsh 上游内部事实的单一来源（跟版门禁）。
+//!
+//! 跟版流程：fetch-runtime.ps1 抓新版 → `cargo test` →
+//! tests/upstream_contract.rs 红了就对照本文件逐条改（每条注明上游出处
+//! 与影响面）。事实清单的文档形态见 docs/design.zh-CN.md §15。
+//!
+//! 当前事实基线：@deepseek-ai/dsh 0.1.0-rc.6（npm latest 通道）。
+
+use std::path::{Path, PathBuf};
+
+/// 多段相对路径拼接（各段不含分隔符，跨平台安全）。
+pub fn join_segments(base: &Path, segments: &[&str]) -> PathBuf {
+    segments.iter().fold(base.to_path_buf(), |p, s| p.join(s))
+}
+
+// ── 包与入口 ──────────────────────────────────────────────
+/// npm 包在运行时树内的位置（runtime/<triplet>/ 之下）。
+/// 上游出处：npm 包名 @deepseek-ai/dsh，fetch-runtime.ps1 用 --prefix dsh 安装。
+pub const DSH_PKG_SEGMENTS: &[&str] = &["dsh", "node_modules", "@deepseek-ai", "dsh"];
+/// 入口脚本的包内相对路径。上游出处：package.json 的 bin.dsh = lib/bin.js。
+/// 影响：runtime.rs 的 paths_for/validate_source（经下方 dsh_bin 助手自动跟随）。
+pub const DSH_BIN_SEGMENTS: &[&str] = &["lib", "bin.js"];
+/// dsh 声明的 Node 主版本下限（package.json engines.node），契约测试断言用。
+pub const DSH_NODE_MAJOR_FLOOR: u32 = 22;
+
+pub fn dsh_pkg_dir(runtime_dir: &Path) -> PathBuf {
+    join_segments(runtime_dir, DSH_PKG_SEGMENTS)
+}
+pub fn dsh_bin(runtime_dir: &Path) -> PathBuf {
+    join_segments(&dsh_pkg_dir(runtime_dir), DSH_BIN_SEGMENTS)
+}
+
+/// npm 前缀的 node_modules（插件与依赖的落盘处；契约探测在这里搜
+/// client.js needle / ui-theme 键 / MCP 插件 package.json）。
+pub const DSH_NM_SEGMENTS: &[&str] = &["dsh", "node_modules"];
+pub fn dsh_node_modules_dir(runtime_dir: &Path) -> PathBuf {
+    join_segments(runtime_dir, DSH_NM_SEGMENTS)
+}
+
+// ── 进程命令形（process.rs spawn）────────────────────────
+/// 上游出处：bin.js 的 web 子命令，仅绑 127.0.0.1。
+pub const DSH_WEB_SUBCOMMAND: &str = "web";
+pub const DSH_PORT_FLAG: &str = "--port";
+
+// ── 事件通道（lib.rs 接线；帧事实 notify/mod.rs 分类）────
+/// 会话事件下行（GET 返回 426，仅 WS）。影响：lib.rs WsSource、notify/ws.rs。
+pub const EVENTS_MUX_PATH: &str = "/api/events.mux";
+/// 主机事件下行（子代理 origin 标记）。影响：同上。
+pub const EVENTS_HOST_PATH: &str = "/api/events.host";
+/// server-request 帧：{"type":"server-request","method":<payload.type>,"payload":{...}}
+pub const METHOD_APPROVAL: &str = "approval/requested";
+pub const METHOD_QUESTION: &str = "question/requested";
+pub const METHOD_SESSION_EVENT: &str = "session/event";
+pub const METHOD_HOST_SESSION_ADDED: &str = "host/session-added";
+pub const METHOD_HOST_SESSION_REMOVED: &str = "host/session-removed";
+/// session/event 的 payload.event.type 值
+pub const EVENT_TURN_END: &str = "turn/end";
+pub const EVENT_SESSION_TITLE: &str = "session/title";
+/// turn/end 的 data.reason.kind 完成值
+pub const REASON_COMPLETED: &str = "completed";
+/// host/session-added 的 payload.origin 子代理标记
+pub const ORIGIN_SUBAGENT: &str = "subagent";
+
+// ── 设置文件（theme.rs 跟随 + 首启播种）──────────────────
+pub const SETTINGS_FILE: &str = "settings.yaml";
+pub const KEY_UI_THEME: &str = "ui-theme";
+pub const KEY_LOCALE: &str = "locale";
+pub const KEY_PREFERENCE: &str = "preference";
+
+// ── MCP（mcp.rs 读写 cordis.patch.yml）───────────────────
+/// 补丁文件的 DSH_HOME 相对路径。上游出处：cordis profile 加载器。
+pub const MCP_PATCH_SEGMENTS: &[&str] = &["profiles", "web", "cordis.patch.yml"];
+/// insert 条目里定位 MCP 客户端的名字。影响：mcp.rs 全部读写。
+pub const MCP_PLUGIN_NAME: &str = "@deepseek-ai/dsh-mcp-client";
+/// cordis patch op 的插入键与条目级启停键（loader 原生语义，HMR 热生效）。
+pub const CORDIS_OP_INSERT: &str = "insert";
+pub const CORDIS_ENTRY_DISABLED: &str = "disabled";
+
+// ── 预设补丁签名（presets.rs；MARKER 与补丁内容是我方产物，不在此列）──
+/// minimal 预设目录的包内相对路径。
+pub const PRESET_DIR_SEGMENTS: &[&str] = &["config", "agent-presets", "minimal"];
+pub const PRESET_COMPOSITION_FILE: &str = "agent.cordis.yml";
+/// 破损签名：引用了 PTY 持久 bash 工具（win32 终端检查器未实现，必抛错）。
+pub const PRESET_BROKEN_NEEDLE: &str = "dsh-tool-bash-persistent";
+/// 上游若引入平台分支（内容出现 win32）视为已自行修复，补丁停手。
+pub const PRESET_PLATFORM_NEEDLE: &str = "win32";
+
+// ── 远程代理（remote/proxy.rs 的 bundle 改写）────────────
+/// dsh 内测声明（WelcomeNoticeStore）的持久化选择三元式。
+/// 须含 `connection.` 前缀，否则替换后残留 `connection."host"` 直接语法错误。
+/// 影响：proxy.rs 改写失效时内测声明每次远程连接都弹（功能不崩，静默退化）。
+pub const WELCOME_NOTICE_NEEDLE: &[u8] = br#"connection.isLoopback ? "host" : "memory""#;

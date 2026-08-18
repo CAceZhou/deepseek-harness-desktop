@@ -297,19 +297,20 @@ Upstream source: [deepseek-harness](https://github.com/deepseek-ai/deepseek-harn
 
 1. Watch upstream releases and the npm version stream; check the changelog against the §15 facts table for contract changes.
 2. Bump the `-DshVersion` default in `scripts/fetch-runtime.ps1` and re-fetch the runtime (smoke test + pruning included). If upstream adds dependencies (native modules, multi-platform prebuilds), adjust `prune-runtime.ps1` rules as needed.
-3. `cd src-tauri && cargo test` all green → `pnpm tauri build` → full pass of `scripts/acceptance.ps1`.
+3. `cd src-tauri && cargo test` all green → `pnpm tauri build` → full pass of `scripts/acceptance.ps1`. **The contract checklist below runs automatically via `tests/upstream_contract.rs`** (probes the real bundled runtime; auto-skips when no runtime is present, and CI's fetch-runtime runs before cargo test so CI always exercises it): a red suite means upstream moved something — follow the failure output to the matching constant in `src-tauri/src/upstream.rs` (the single source of truth for every upstream fact, each annotated with its provenance and blast radius), and touch the consuming module only if needed.
 4. Sync the version number in all three places (§11), tag `v*`; CI builds and publishes the GitHub Release.
 
-**Interface contract checklist (code changes only when upstream moves these)**:
+**Interface contract checklist (code changes only when upstream moves these; code form: `src-tauri/src/upstream.rs` constants + `tests/upstream_contract.rs` probes)**:
 
 | Upstream fact (current values in §15) | Where to change |
 | --- | --- |
-| Entry point `lib/bin.js` path | `paths_for` / `validate_source` in `runtime.rs` |
-| `web --port <N>` command shape | spawn args in `process.rs` |
-| Event channels `/api/events.mux` + `/api/events.host` and frame format | the `notify/` adapter (the `NotifySource` trait exists for exactly this; frame classification lives in `handle_mux_frame`/`handle_host_frame`) |
-| `ui-theme.preference` in `settings.yaml` | `theme.rs` (parsing + first-launch seeding) |
-| Node version requirement | `-NodeVersion` in `fetch-runtime.ps1` |
-| WS trust fence (loopback / no Origin) | handshake in `notify/ws.rs` |
+| Entry point `lib/bin.js` path | `DSH_PKG_SEGMENTS`/`DSH_BIN_SEGMENTS` in `upstream.rs` (`paths_for`/`validate_source` in `runtime.rs` follow via the helper) |
+| `web --port <N>` command shape | `DSH_WEB_SUBCOMMAND`/`DSH_PORT_FLAG` in `upstream.rs` (referenced by the spawn in `process.rs`) |
+| Event channels `/api/events.mux` + `/api/events.host` and frame format | `EVENTS_*_PATH` and the frame constants in `upstream.rs` (referenced by the `notify/` adapter; the `NotifySource` trait isolates the source implementation) |
+| `ui-theme.preference` in `settings.yaml` | `SETTINGS_FILE`/`KEY_*` in `upstream.rs` (parsing + first-launch seeding in `theme.rs`) |
+| Node version requirement | `-NodeVersion` in `fetch-runtime.ps1` + `DSH_NODE_MAJOR_FLOOR` in `upstream.rs` |
+| WS trust fence (loopback / no Origin) | probed directly by the contract suite (wrong Origin → 403); if the fence behavior changes, re-evaluate the header-stripping in `remote/proxy.rs` |
+| WelcomeNotice ternary needle | `WELCOME_NOTICE_NEEDLE` in `upstream.rs` (bundle rewrite in `remote/proxy.rs`) |
 
 Contract breaks mostly surface in `cargo test` (WS notification integration, theme parsing unit tests) or the end-to-end acceptance run; in the field, check `events.log` first.
 
@@ -317,10 +318,12 @@ Contract breaks mostly surface in `cargo test` (WS notification integration, the
 
 ## 15. Appendix: upstream dsh facts (0.1.0-rc.6)
 
+> This table is the documentary form; its code form lives in `src-tauri/src/upstream.rs` (single source of truth), and `tests/upstream_contract.rs` verifies it automatically. When a tracking bump changes `upstream.rs`, sync this table.
+
 | Fact | Value |
 | --- | --- |
 | npm package | `@deepseek-ai/dsh@0.1.0-rc.6` |
-| Node requirement | `^22.19 \|\| >=24` (bundled: v24.19.0) |
+| Node requirement | `^22.19 \|\| >=24` (declared in the upstream repo; the published tarball carries no engines field — confirmed by the contract suite. Bundled: v24.19.0) |
 | Entry point | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | Web command | `bin.js web --port <N>`, binds 127.0.0.1 only |
 | Event channels | WebSocket `/api/events.mux` + `/api/events.host` (GET → 426, WS only) |

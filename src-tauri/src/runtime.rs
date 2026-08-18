@@ -63,13 +63,7 @@ fn paths_for(
 ) -> RuntimePaths {
     RuntimePaths {
         node_exe: runtime_dir.join(platform.node_exe_name()),
-        dsh_bin: runtime_dir
-            .join("dsh")
-            .join("node_modules")
-            .join("@deepseek-ai")
-            .join("dsh")
-            .join("lib")
-            .join("bin.js"),
+        dsh_bin: crate::upstream::dsh_bin(runtime_dir),
         home,
         // cwd 保持在可写的应用数据目录，与运行时本体解耦
         work_dir: base,
@@ -140,13 +134,7 @@ fn validate_source(src: &Path, platform: &dyn Platform) -> Result<(), RuntimeErr
     if !node.is_file() {
         return Err(RuntimeError::Incomplete(node.display().to_string()));
     }
-    let bin = src
-        .join("dsh")
-        .join("node_modules")
-        .join("@deepseek-ai")
-        .join("dsh")
-        .join("lib")
-        .join("bin.js");
+    let bin = crate::upstream::dsh_bin(src);
     if !bin.is_file() {
         return Err(RuntimeError::Incomplete(bin.display().to_string()));
     }

@@ -18,7 +18,7 @@ impl ShellUiState {
     /// 启动时的初始解析：settings.yaml 可能尚不存在（首启），
     /// 此时按系统解析；关注循环 2s 后会再校正并广播。
     pub fn new(platform: &dyn Platform, dsh_home: &Path) -> Self {
-        let settings = dsh_home.join("settings.yaml");
+        let settings = dsh_home.join(crate::upstream::SETTINGS_FILE);
         let locale = resolve_locale(platform, &settings);
         // 立即写入全局语言：托盘菜单/窗口标题/通知等先按解析值渲染，
         // 首轮轮询（force 同步）再校正——若设置里是 en，等 2s 后才英文也可接受
@@ -44,7 +44,7 @@ pub fn spawn_theme_follower(app: &AppHandle, platform: Arc<dyn Platform>, dsh_ho
     apply(app, initial);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let settings = dsh_home.join("settings.yaml");
+        let settings = dsh_home.join(crate::upstream::SETTINGS_FILE);
         // 首轮强制同步：即便与启动快照相同，也要广播一次、并让托盘菜单按
         // 最终解析的语言重建（tray 在 ShellUiState 之前创建，可能是旧语言）
         let first = UiSnapshot {
@@ -107,13 +107,21 @@ fn system_theme(platform: &dyn Platform) -> Theme {
 /// 首启会出现"深标题栏 + 浅内容"的不一致。播种后 dsh 首启即与壳一致。
 /// 注意：yaml-rust 不接受 UTF-8 BOM，std::fs::write 不会写 BOM。
 pub fn seed_theme_preference(home: &Path, dark: bool) {
-    let path = home.join("settings.yaml");
+    let path = home.join(crate::upstream::SETTINGS_FILE);
     if path.exists() {
         return;
     }
     let pref = if dark { "dark" } else { "light" };
-    let _ = std::fs::create_dir_all(home)
-        .and_then(|_| std::fs::write(&path, format!("ui-theme:\n  preference: {pref}\n")));
+    let _ = std::fs::create_dir_all(home).and_then(|_| {
+        std::fs::write(
+            &path,
+            format!(
+                "{}:\n  {}: {pref}\n",
+                crate::upstream::KEY_UI_THEME,
+                crate::upstream::KEY_PREFERENCE
+            ),
+        )
+    });
 }
 
 fn resolve(platform: &dyn Platform, settings: &Path) -> Theme {
@@ -226,17 +234,17 @@ fn read_preference(path: &Path, section: &str) -> Option<String> {
     let value: serde_yaml::Value = serde_yaml::from_str(text).ok()?;
     value
         .get(section)?
-        .get("preference")?
+        .get(crate::upstream::KEY_PREFERENCE)?
         .as_str()
         .map(|s| s.trim().to_string())
 }
 
 fn read_theme_preference(path: &Path) -> Option<String> {
-    read_preference(path, "ui-theme")
+    read_preference(path, crate::upstream::KEY_UI_THEME)
 }
 
 fn read_locale_preference(path: &Path) -> Option<String> {
-    read_preference(path, "locale")
+    read_preference(path, crate::upstream::KEY_LOCALE)
 }
 
 #[cfg(test)]

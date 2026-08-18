@@ -286,18 +286,20 @@ scripts/fetch-runtime.ps1
 
 1. 关注上游 release 与 npm 版本流，对照 §15 事实清单评估是否触及接口契约。
 2. 改 `scripts/fetch-runtime.ps1` 的 `-DshVersion` 默认值，重新抓运行时（含冒烟与 prune 精简）；若上游新增依赖（尤其 native 模块、多平台 prebuilds），按需调整 `prune-runtime.ps1` 规则。
-3. `cd src-tauri && cargo test` 全绿 → `pnpm tauri build` → `scripts/acceptance.ps1` 全项验收。
+3. `cd src-tauri && cargo test` 全绿 → `pnpm tauri build` → `scripts/acceptance.ps1` 全项验收。**契约核对表由 `tests/upstream_contract.rs` 自动执行**（真实运行时探测，无运行时自动 skip；CI 的 fetch-runtime 在 cargo test 之前，故 CI 一定真跑）：红了说明上游变了，按失败输出的指引改 `src-tauri/src/upstream.rs` 对应常量（全部上游事实的单一来源，每条注明出处与影响面），必要时动对应消费模块。
 4. 三处版本号同步（§11）后打 tag `v*`，CI 自动构建并发布 GitHub Release。
 
-**接口契约核对表（上游变了才动代码）**：
+**接口契约核对表（上游变了才动代码；代码化身：`src-tauri/src/upstream.rs` 常量 + `tests/upstream_contract.rs` 探测）**：
 
 | 上游事实（当前值见 §15） | 变了要动哪里 |
 | --- | --- |
-| 入口 `lib/bin.js` 路径 | `runtime.rs` 的 `paths_for` / `validate_source` |
-| `web --port <N>` 命令形式 | `process.rs` 的 spawn 参数 |
-| 事件通道 `/api/events.mux` + `/api/events.host` 及帧格式 | `notify/` 适配层（`NotifySource` trait 即为此隔离；帧分类在 `handle_mux_frame`/`handle_host_frame`） |
-| `settings.yaml` 的 `ui-theme.preference` | `theme.rs`（解析 + 首启播种） |
-| Node 版本要求 | `fetch-runtime.ps1` 的 `-NodeVersion` |
+| 入口 `lib/bin.js` 路径 | `upstream.rs` 的 `DSH_PKG_SEGMENTS`/`DSH_BIN_SEGMENTS`（`runtime.rs` 的 `paths_for`/`validate_source` 经助手自动跟随） |
+| `web --port <N>` 命令形式 | `upstream.rs` 的 `DSH_WEB_SUBCOMMAND`/`DSH_PORT_FLAG`（`process.rs` spawn 引用） |
+| 事件通道 `/api/events.mux` + `/api/events.host` 及帧格式 | `upstream.rs` 的 `EVENTS_*_PATH` 与帧常量（`notify/` 适配层引用；`NotifySource` trait 隔离来源实现） |
+| `settings.yaml` 的 `ui-theme.preference` | `upstream.rs` 的 `SETTINGS_FILE`/`KEY_*`（`theme.rs` 解析与首启播种引用） |
+| Node 版本要求 | `fetch-runtime.ps1` 的 `-NodeVersion` + `upstream.rs` 的 `DSH_NODE_MAJOR_FLOOR` |
+| WS 信任栅栏（loopback / 无 Origin） | 契约套件直接探测（错 Origin→403）；行为变了重估 `remote/proxy.rs` 剥头策略 |
+| 内测声明三元式 needle | `upstream.rs` 的 `WELCOME_NOTICE_NEEDLE`（`remote/proxy.rs` bundle 改写引用） |
 | WS 信任栅栏（loopback / 无 Origin） | `notify/ws.rs` 握手 |
 
 契约变化大多会在 `cargo test`（WS 通知集成、主题解析等单测）或 acceptance 全链路中暴露；现场问题先看 `events.log`。
@@ -306,10 +308,13 @@ scripts/fetch-runtime.ps1
 
 ## 15. 附录：dsh 上游事实清单（0.1.0-rc.6）
 
+> 本表是文档形态；代码化身在 `src-tauri/src/upstream.rs`（单一事实源），
+> 自动核对由 `tests/upstream_contract.rs` 执行。跟版改了 upstream.rs 就同步本表。
+
 | 事实 | 值 |
 | --- | --- |
 | npm 包 | `@deepseek-ai/dsh@0.1.0-rc.6` |
-| Node 要求 | `^22.19 \|\| >=24`（随包内嵌 v24.19.0） |
+| Node 要求 | `^22.19 \|\| >=24`（上游仓库声明；发布 tarball 不含 engines 字段，契约套件实测确认。随包内嵌 v24.19.0） |
 | 入口 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | Web 命令 | `bin.js web --port <N>`，仅绑 127.0.0.1 |
 | 事件通道 | WebSocket `/api/events.mux` + `/api/events.host`（GET → 426，仅 WS） |

@@ -128,8 +128,8 @@ impl DshProcess {
             ));
             let mut cmd = Command::new(&self.inner.paths.node_exe);
             cmd.arg(&self.inner.paths.dsh_bin)
-                .arg("web")
-                .arg("--port")
+                .arg(crate::upstream::DSH_WEB_SUBCOMMAND)
+                .arg(crate::upstream::DSH_PORT_FLAG)
                 .arg(port.to_string())
                 .env("DSH_HOME", &self.inner.paths.home)
                 .current_dir(&self.inner.paths.work_dir)

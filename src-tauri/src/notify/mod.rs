@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::watch;
 
+use crate::upstream;
+
 pub mod ws;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +38,12 @@ pub trait NotifySource: Send {
 
 /// 需要用户关注的事件（server-request 帧的 method），粗筛快路径
 static ATTENTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#""(method|type)"\s*:\s*"(approval/requested|question/requested)""#).unwrap()
+    Regex::new(&format!(
+        r#""(method|type)"\s*:\s*"({}|{})""#,
+        upstream::METHOD_APPROVAL,
+        upstream::METHOD_QUESTION
+    ))
+    .unwrap()
 });
 
 /// 会话台账：子代理集合（来自 events.host 的 origin=subagent）+
@@ -75,7 +82,7 @@ impl SessionBook {
 /// 先 contains 粗筛、命中才 JSON 解析——流式期间每 token 一帧，不能逢帧解析。
 pub fn handle_mux_frame(frame: &str, sink: &NotifySink, book: &Mutex<SessionBook>) {
     if ATTENTION_RE.is_match(frame) {
-        let kind = if frame.contains("approval/requested") {
+        let kind = if frame.contains(upstream::METHOD_APPROVAL) {
             NotifyKind::Approval
         } else {
             NotifyKind::Question
@@ -87,13 +94,13 @@ pub fn handle_mux_frame(frame: &str, sink: &NotifySink, book: &Mutex<SessionBook
         });
         return;
     }
-    if !frame.contains("session/event") {
+    if !frame.contains(upstream::METHOD_SESSION_EVENT) {
         return;
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(frame) else {
         return;
     };
-    if v.get("method").and_then(|m| m.as_str()) != Some("session/event") {
+    if v.get("method").and_then(|m| m.as_str()) != Some(upstream::METHOD_SESSION_EVENT) {
         return;
     }
     let Some(payload) = v.get("payload") else { return };
@@ -102,13 +109,13 @@ pub fn handle_mux_frame(frame: &str, sink: &NotifySink, book: &Mutex<SessionBook
     };
     let Some(event) = payload.get("event") else { return };
     match event.get("type").and_then(|t| t.as_str()) {
-        Some("turn/end") => {
+        Some(upstream::EVENT_TURN_END) => {
             let completed = event
                 .get("data")
                 .and_then(|d| d.get("reason"))
                 .and_then(|r| r.get("kind"))
                 .and_then(|k| k.as_str())
-                == Some("completed");
+                == Some(upstream::REASON_COMPLETED);
             if !completed {
                 return;
             }
@@ -126,7 +133,7 @@ pub fn handle_mux_frame(frame: &str, sink: &NotifySink, book: &Mutex<SessionBook
                 kind: NotifyKind::TurnCompleted,
             });
         }
-        Some("session/title") => {
+        Some(upstream::EVENT_SESSION_TITLE) => {
             if let Some(title) = event
                 .get("data")
                 .and_then(|d| d.get("title"))
@@ -141,8 +148,8 @@ pub fn handle_mux_frame(frame: &str, sink: &NotifySink, book: &Mutex<SessionBook
 
 /// host 帧处理：只跟踪 session-added(origin=="subagent") / session-removed
 pub fn handle_host_frame(frame: &str, book: &Mutex<SessionBook>) {
-    let added = frame.contains("host/session-added");
-    if !added && !frame.contains("host/session-removed") {
+    let added = frame.contains(upstream::METHOD_HOST_SESSION_ADDED);
+    if !added && !frame.contains(upstream::METHOD_HOST_SESSION_REMOVED) {
         return;
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(frame) else {
@@ -154,12 +161,12 @@ pub fn handle_host_frame(frame: &str, book: &Mutex<SessionBook>) {
         return;
     };
     match method {
-        Some("host/session-added")
-            if payload.get("origin").and_then(|o| o.as_str()) == Some("subagent") =>
+        Some(upstream::METHOD_HOST_SESSION_ADDED)
+            if payload.get("origin").and_then(|o| o.as_str()) == Some(upstream::ORIGIN_SUBAGENT) =>
         {
             book.lock().unwrap().add_subagent(id);
         }
-        Some("host/session-removed") => book.lock().unwrap().remove(id),
+        Some(upstream::METHOD_HOST_SESSION_REMOVED) => book.lock().unwrap().remove(id),
         _ => {}
     }
 }

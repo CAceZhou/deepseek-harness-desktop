@@ -16,8 +16,6 @@ use tauri::State;
 /// dsh 实际使用的 home（DSH_HOME），与 skills::SkillsHome 同源
 pub struct McpHome(pub PathBuf);
 
-const MCP_PLUGIN: &str = "@deepseek-ai/dsh-mcp-client";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
@@ -45,7 +43,7 @@ pub struct McpServerRow {
 }
 
 fn patch_path(home: &Path) -> PathBuf {
-    home.join("profiles").join("web").join("cordis.patch.yml")
+    crate::upstream::join_segments(home, crate::upstream::MCP_PATCH_SEGMENTS)
 }
 
 fn read_patch(path: &Path) -> Result<Vec<Value>, String> {
@@ -80,9 +78,9 @@ fn write_patch(path: &Path, entries: &[Value]) -> Result<(), String> {
 fn mcp_positions(entries: &[Value]) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for (oi, op) in entries.iter().enumerate() {
-        if let Some(list) = op.get("insert").and_then(Value::as_sequence) {
+        if let Some(list) = op.get(crate::upstream::CORDIS_OP_INSERT).and_then(Value::as_sequence) {
             for (ii, e) in list.iter().enumerate() {
-                if e.get("name").and_then(Value::as_str) == Some(MCP_PLUGIN) {
+                if e.get("name").and_then(Value::as_str) == Some(crate::upstream::MCP_PLUGIN_NAME) {
                     out.push((oi, ii));
                 }
             }
@@ -92,7 +90,7 @@ fn mcp_positions(entries: &[Value]) -> Vec<(usize, usize)> {
 }
 
 fn entry_at<'a>(entries: &'a [Value], pos: (usize, usize)) -> &'a Value {
-    &entries[pos.0]["insert"][pos.1]
+    &entries[pos.0][crate::upstream::CORDIS_OP_INSERT][pos.1]
 }
 
 fn to_row(e: &Value) -> McpServerRow {
@@ -138,7 +136,10 @@ fn to_row(e: &Value) -> McpServerRow {
         server_name: config.server_name.clone(),
         transport,
         summary,
-        enabled: !matches!(e.get("disabled"), Some(Value::Bool(true))),
+        enabled: !matches!(
+            e.get(crate::upstream::CORDIS_ENTRY_DISABLED),
+            Some(Value::Bool(true))
+        ),
         config,
     }
 }
@@ -171,15 +172,18 @@ fn set_server_enabled(home: &Path, server_name: &str, enabled: bool) -> Result<(
             format!("MCP server not found: {server_name}"),
         )
     })?;
-    let e = entries[pos.0]["insert"]
+    let e = entries[pos.0][crate::upstream::CORDIS_OP_INSERT]
         .as_sequence_mut()
         .and_then(|s| s.get_mut(pos.1))
         .unwrap();
     let map = e.as_mapping_mut().unwrap();
     if enabled {
-        map.remove(Value::String("disabled".into()));
+        map.remove(Value::String(crate::upstream::CORDIS_ENTRY_DISABLED.into()));
     } else {
-        map.insert(Value::String("disabled".into()), Value::Bool(true));
+        map.insert(
+            Value::String(crate::upstream::CORDIS_ENTRY_DISABLED.into()),
+            Value::Bool(true),
+        );
     }
     write_patch(&path, &entries)
 }
@@ -193,8 +197,14 @@ fn delete_server(home: &Path, server_name: &str) -> Result<(), String> {
             format!("MCP server not found: {server_name}"),
         )
     })?;
-    entries[oi]["insert"].as_sequence_mut().unwrap().remove(ii);
-    if entries[oi]["insert"].as_sequence().is_some_and(|s| s.is_empty()) {
+    entries[oi][crate::upstream::CORDIS_OP_INSERT]
+        .as_sequence_mut()
+        .unwrap()
+        .remove(ii);
+    if entries[oi][crate::upstream::CORDIS_OP_INSERT]
+        .as_sequence()
+        .is_some_and(|s| s.is_empty())
+    {
         entries.remove(oi); // 该 op 只插了这一个条目：连同 op 一起删
     }
     write_patch(&path, &entries)
@@ -289,7 +299,7 @@ fn upsert_server(home: &Path, original: Option<&str>, cfg: &McpServerConfig) -> 
 
     if let Some(p) = edit_pos {
         // 原地改：保留旧 disabled 标志；重命名时更新 id
-        let e = entries[p.0]["insert"]
+        let e = entries[p.0][crate::upstream::CORDIS_OP_INSERT]
             .as_sequence_mut()
             .and_then(|s| s.get_mut(p.1))
             .unwrap();
@@ -308,11 +318,14 @@ fn upsert_server(home: &Path, original: Option<&str>, cfg: &McpServerConfig) -> 
         Value::String("id".into()),
         Value::String(format!("mcp-{}", cfg.server_name)),
     );
-    e.insert(Value::String("name".into()), Value::String(MCP_PLUGIN.into()));
+    e.insert(
+        Value::String("name".into()),
+        Value::String(crate::upstream::MCP_PLUGIN_NAME.into()),
+    );
     e.insert(Value::String("config".into()), Value::Mapping(map));
     let mut op = serde_yaml::Mapping::new();
     op.insert(
-        Value::String("insert".into()),
+        Value::String(crate::upstream::CORDIS_OP_INSERT.into()),
         Value::Sequence(vec![Value::Mapping(e)]),
     );
     entries.push(Value::Mapping(op));
@@ -348,14 +361,18 @@ fn seed_auto_import(user_dsh_home: &Path, home: &Path) -> Result<(), String> {
     let target_path = patch_path(home);
     let mut target = read_patch(&target_path)?;
     let mut changed = false;
-    for rel in ["profiles/web/cordis.patch.yml", "cordis.patch.yml"] {
+    let layers = [
+        crate::upstream::join_segments(user_dsh_home, crate::upstream::MCP_PATCH_SEGMENTS),
+        user_dsh_home.join("cordis.patch.yml"),
+    ];
+    for path in layers {
         // 解析失败（如含无法处理的语法）的源文件跳过，不影响另一层
-        let Ok(entries) = read_patch(&user_dsh_home.join(rel)) else {
+        let Ok(entries) = read_patch(&path) else {
             continue;
         };
         for pos in mcp_positions(&entries) {
             let e = entry_at(&entries, pos);
-            if e.get("disabled").is_some() {
+            if e.get(crate::upstream::CORDIS_ENTRY_DISABLED).is_some() {
                 continue; // 源里禁用（含 !!js 表达式）的不同步，也不记 marker
             }
             let Some(name) = e["config"]["serverName"].as_str().map(str::to_string) else {
@@ -366,7 +383,10 @@ fn seed_auto_import(user_dsh_home: &Path, home: &Path) -> Result<(), String> {
             }
             if find_server(&target, &name).is_none() {
                 let mut op = serde_yaml::Mapping::new();
-                op.insert(Value::String("insert".into()), Value::Sequence(vec![e.clone()]));
+                op.insert(
+                    Value::String(crate::upstream::CORDIS_OP_INSERT.into()),
+                    Value::Sequence(vec![e.clone()]),
+                );
                 target.push(Value::Mapping(op));
                 changed = true;
             }

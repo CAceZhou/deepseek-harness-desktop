@@ -31,13 +31,10 @@ const GATE_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><tit
 <body style=\"font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0\">\
 <p>DSHDesktop 远程访问：链接无效或已过期。<br>请在电脑托盘菜单重新生成链接。</p></body></html>";
 
-/// dsh 内测声明（WelcomeNoticeStore）的持久化选择三元式：
-/// `connection.isLoopback ? "host" : "memory"`。经隧道访问时页面源是 trycloudflare
-/// 域名（非回环），dsh 选 "memory" 持久化——确认记录不落 settings.yaml，每次连接都弹
-/// 内测声明。代理转发插件 bundle 时把该三元式改写为 "host"，远程端与桌面端共用同一份
-/// 持久化确认（桌面是回环源本来就写 host，settings.yaml 里已有记录则远程直接不再弹）。
-/// needle 须含 `connection.` 前缀，否则替换后残留 `connection."host"` 直接语法错误。
-const WELCOME_NOTICE_NEEDLE: &[u8] = br#"connection.isLoopback ? "host" : "memory""#;
+/// 内测声明三元式 needle 已上移 crate::upstream::WELCOME_NOTICE_NEEDLE（单一事实源，
+/// 含为何须带 `connection.` 前缀的说明）。改写语义：隧道场景 dsh 选 "memory" 持久化，
+/// 确认记录不落 settings.yaml、每次连接都弹声明；改写为 "host" 后远程端与桌面端
+/// 共用同一份持久化确认（桌面是回环源本就已写 host）。
 const WELCOME_NOTICE_REPL: &[u8] = br#""host""#;
 /// 只对不超过该体积的插件 bundle 做缓冲改写，超出原样透传（声明照弹，不破坏功能）
 const REWRITE_BUFFER_LIMIT: u64 = 4 * 1024 * 1024;
@@ -292,7 +289,7 @@ async fn rewrite_plugin_bundle(res: reqwest::Response) -> Response {
     let builder = buffered_builder(&res);
     match res.bytes().await {
         Ok(bytes) if bytes.len() as u64 <= REWRITE_BUFFER_LIMIT => {
-            let body = replace_all(&bytes, WELCOME_NOTICE_NEEDLE, WELCOME_NOTICE_REPL)
+            let body = replace_all(&bytes, crate::upstream::WELCOME_NOTICE_NEEDLE, WELCOME_NOTICE_REPL)
                 .unwrap_or_else(|| bytes.to_vec());
             builder
                 .body(Body::from(body))

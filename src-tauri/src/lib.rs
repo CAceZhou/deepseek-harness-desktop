@@ -22,6 +22,7 @@ pub mod settings;
 pub mod skills;
 pub mod theme;
 pub mod tray;
+pub mod upstream;
 pub mod update;
 pub mod zoom;
 
@@ -244,7 +245,7 @@ pub fn run() {
             let reconnect_book = book.clone();
             tauri::async_runtime::spawn(
                 Box::new(notify::ws::WsSource {
-                    path: "/api/events.mux",
+                    path: upstream::EVENTS_MUX_PATH,
                     handler: mux_handler,
                     on_connect: None,
                 })
@@ -252,7 +253,7 @@ pub fn run() {
             );
             tauri::async_runtime::spawn(
                 Box::new(notify::ws::WsSource {
-                    path: "/api/events.host",
+                    path: upstream::EVENTS_HOST_PATH,
                     handler: host_handler,
                     on_connect: Some(Arc::new(move || {
                         reconnect_book.lock().unwrap().clear_subagents();
