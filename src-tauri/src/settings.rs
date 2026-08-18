@@ -528,6 +528,23 @@ mod tests {
     }
 
     #[test]
+    fn bundled_sound_layout_matches_probe_path() {
+        // resolve_custom_sound 在 resource_dir()/exe 旁的 sounds/ 下找 wav（custom_wav
+        // 的相对路径），所以 bundle.resources 必须把 resources/sounds 映射为安装根的
+        // sounds/。列表形式会原样保留目录层级，安装后落在 resources/sounds/ ——
+        // 探测不到，自定义音静默降级系统默认（≤0.1.16 实踩）。
+        let conf: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(conf["bundle"]["resources"]["resources/sounds"], "sounds");
+        for s in [CompletionSound::Chime, CompletionSound::Drop, CompletionSound::Mellow] {
+            assert!(s.custom_wav().unwrap().starts_with("sounds/"));
+        }
+    }
+
+    #[test]
     fn custom_soft_sounds_serde_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = ShellSettings::default();
