@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "dshdesktop"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "arboard",
  "auto-launch",
