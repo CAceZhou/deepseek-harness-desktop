@@ -4,6 +4,7 @@
   import Settings from './settings/Settings.svelte'
   import Skills from './skills/Skills.svelte'
   import Mcp from './mcp/Mcp.svelte'
+  import Plugins from './plugins/Plugins.svelte'
   import Remote from './remote/Remote.svelte'
 
   let route = $state(window.location.hash)
@@ -18,6 +19,8 @@
   <Settings />
 {:else if route.startsWith('#/skills')}
   <Skills />
+{:else if route.startsWith('#/plugins')}
+  <Plugins />
 {:else if route.startsWith('#/mcp')}
   <Mcp />
 {:else if route.startsWith('#/remote')}

@@ -76,6 +76,23 @@ pub const MCP_PLUGIN_NAME: &str = "@deepseek-ai/dsh-mcp-client";
 pub const CORDIS_OP_INSERT: &str = "insert";
 pub const CORDIS_ENTRY_DISABLED: &str = "disabled";
 
+// ── 目录选择器（picker.rs 启动钉 browse；mobile.css 适配其对话框）────
+// 上游出处：dsh-web-app/cordis.patch.yml 的 `- id: directory-picker` 行（name 为
+// dsh-host-directory-picker-auto，启动期一次性决议：绑 127.0.0.1 + win32 ⇒ native
+// Win32 系统对话框——弹在电脑屏幕上，远程手机端不可见不可用）；官方 pin 方式见
+// apps/web/tests/pin-browse-picker.overlay.yml 与该 bundle patch 的行注释
+//（"Mount -native or -browse directly in an overlay to pin the interaction"）。
+// 影响面：行 id 写错 = disable 落空（桌面回到原生对话框、手机照旧不可用）；
+// browse 包名写错 = insert 行解析不到插件，dsh 启动报错。
+/// shipped bundle patch 里 auto 行的 id（picker.rs 的 disable 目标）。
+pub const PICKER_AUTO_ROW_ID: &str = "directory-picker";
+/// 钉入的 browse 后端行 id 与包名（host 侧列目录/建目录能力）。
+pub const PICKER_BROWSE_HOST_ROW_ID: &str = "directory-picker-browse";
+pub const PICKER_BROWSE_HOST_PKG: &str = "@deepseek-ai/dsh-host-directory-picker-browse";
+/// 钉入的 browse 网页表面行 id 与包名（占用 ui-workspace 的 directory-flow 槽位）。
+pub const PICKER_BROWSE_SURFACE_ROW_ID: &str = "ui-directory-picker-browse";
+pub const PICKER_BROWSE_SURFACE_PKG: &str = "@deepseek-ai/dsh-client-ui-directory-picker-browse";
+
 // ── 预设补丁签名（presets.rs；MARKER 与补丁内容是我方产物，不在此列）──
 /// minimal 预设目录的包内相对路径。
 pub const PRESET_DIR_SEGMENTS: &[&str] = &["config", "agent-presets", "minimal"];
@@ -90,3 +107,20 @@ pub const PRESET_PLATFORM_NEEDLE: &str = "win32";
 /// 须含 `connection.` 前缀，否则替换后残留 `connection."host"` 直接语法错误。
 /// 影响：proxy.rs 改写失效时内测声明每次远程连接都弹（功能不崩，静默退化）。
 pub const WELCOME_NOTICE_NEEDLE: &[u8] = br#"connection.isLoopback ? "host" : "memory""#;
+
+// ── 插件管理（plugins.rs；dsh plugin 官方入口 + 壳内置 pnpm）────────
+/// plugin 子命令与 profile 参数。上游出处：bin.js command("plugin") +
+/// requiredOption("--profile <name>")，参数原样透传给 pnpm。
+pub const DSH_PLUGIN_SUBCOMMAND: &str = "plugin";
+pub const DSH_PLUGIN_PROFILE_FLAG: &str = "--profile";
+/// 壳面板管理的目标 profile（= `dsh web` 的别名 profile）。
+pub const DSH_WEB_PROFILE_NAME: &str = "web";
+/// profile 目录与清单文件。上游出处：dsh-app-boot 的 initProfile/writeProfileManifest。
+pub const PROFILE_DIR_SEGMENTS: &[&str] = &["profiles", "web"];
+pub const PROFILE_MANIFEST_FILE: &str = "package.json";
+/// 清单 JSON 路径：已装依赖 / 插件层列表（reconcile 只认声明 dsh.bundle 的包）。
+pub const MANIFEST_DEPENDENCIES_KEY: &str = "dependencies";
+pub const MANIFEST_BUNDLES_POINTER: &str = "/dsh/profile/bundles";
+/// 壳内置 pnpm 两个文件（fetch-runtime.ps1 产出，位于 node.exe 同目录）。
+pub const PNPM_JS_FILE: &str = "pnpm.cjs";
+pub const PNPM_CMD_FILE: &str = "pnpm.cmd";

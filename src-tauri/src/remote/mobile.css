@@ -119,6 +119,18 @@
   }
 
   /*
+   * 目录浏览对话框（picker.rs 钉的 browse 交互）：原生高度上限 500px，手机
+   * 844px 视口上下留白过大、列表仅 ~9 行。放宽到近全屏（保留 24px 上下边距
+   * 与圆角，与其它弹窗视觉一致）。footer 四控件窄屏已自行两行换行，无需处理；
+   * Miller 双栏横滚 + JS 自动钉右是上游的手机形态，不动。
+   * 锚点 _millerRow 是该包独有的 CSS Modules 本地名（全 node_modules 已核实），
+   * :has 限定不误伤设置弹窗；上游改名则回到 500px 上限，功能不损。
+   */
+  [role="dialog"]:has([class*="_millerRow"]) {
+    height: calc(100dvh - 48px);
+  }
+
+  /*
    * 回合统计行（N 轮 · N 步 | LLM 耗时 | 首 token … | 缓存命中 | 输入输出）
    * 内容约 460px 宽、单行 nowrap，手机 294px 必然从中截断（"首 token 平…"）。
    * 正常路径：mobile.js 在"对话/轨迹"旁加"信息"标签，统计行整体移入面板

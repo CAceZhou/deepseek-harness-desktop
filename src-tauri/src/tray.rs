@@ -3,12 +3,13 @@ use crate::i18n;
 use crate::remote::RemoteManager;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
 
 pub const MENU_OPEN: &str = "open";
 pub const MENU_DIAGNOSTICS: &str = "diagnostics";
+pub const MENU_PLUGINS: &str = "plugins";
 pub const MENU_SKILLS: &str = "skills";
 pub const MENU_MCP: &str = "mcp";
 pub const MENU_REMOTE_ENABLE: &str = "remote-enable";
@@ -43,6 +44,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             MENU_OPEN => show_main(app),
             MENU_DIAGNOSTICS => open_diagnostics(app),
+            MENU_PLUGINS => open_plugins(app),
             MENU_SKILLS => open_skills(app),
             MENU_MCP => open_mcp(app),
             MENU_SETTINGS => open_settings(app),
@@ -101,6 +103,18 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             MENU_QUIT => quit_app(app),
             _ => {}
         })
+        // 左键单击托盘图标 = 打开主界面（隐藏到托盘后一次点击即回；窗口未销毁，
+        // 位置保持隐藏前状态）；菜单改由右键弹出（show_menu_on_left_click(false)）
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        })
         .build(app)?;
     Ok(())
 }
@@ -120,6 +134,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, RemoteItems)>
         app,
         MENU_DIAGNOSTICS,
         i18n::pick("诊断面板", "Diagnostics"),
+        true,
+        None::<&str>,
+    )?;
+    let plugins = MenuItem::with_id(
+        app,
+        MENU_PLUGINS,
+        i18n::pick("插件管理", "Plugins"),
         true,
         None::<&str>,
     )?;
@@ -199,7 +220,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, RemoteItems)>
     let quit = MenuItem::with_id(app, MENU_QUIT, i18n::pick("退出", "Quit"), true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&open, &diagnostics, &skills, &mcp, &remote, &restart, &settings, &sep, &quit],
+        &[&open, &diagnostics, &plugins, &skills, &mcp, &remote, &restart, &settings, &sep, &quit],
     )?;
     Ok((menu, remote_items))
 }
@@ -221,6 +242,7 @@ pub fn apply_locale(app: &AppHandle, _locale: &str) {
     let titles: &[(&str, &str, &str)] = &[
         ("diagnostics", "DSHDesktop 诊断面板", "DSHDesktop Diagnostics"),
         ("settings", "DSHDesktop 设置", "DSHDesktop Settings"),
+        ("plugins", "DSHDesktop 插件管理", "DSHDesktop Plugins"),
         ("skills", "DSHDesktop 技能管理", "DSHDesktop Skills"),
         ("mcp", "DSHDesktop MCP 管理", "DSHDesktop MCP Manager"),
         ("remote", "DSHDesktop 远程访问", "DSHDesktop Remote Access"),
@@ -288,6 +310,21 @@ fn open_settings(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html#/settings".into()))
         .title(window_title("DSHDesktop 设置", "DSHDesktop Settings"))
         .inner_size(760.0, 700.0)
+        .center()
+        .visible(false)
+        .build();
+}
+
+fn open_plugins(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("plugins") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let _ = WebviewWindowBuilder::new(app, "plugins", WebviewUrl::App("index.html#/plugins".into()))
+        .title(window_title("DSHDesktop 插件管理", "DSHDesktop Plugins"))
+        .inner_size(900.0, 680.0)
         .center()
         .visible(false)
         .build();

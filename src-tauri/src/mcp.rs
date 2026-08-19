@@ -46,7 +46,8 @@ fn patch_path(home: &Path) -> PathBuf {
     crate::upstream::join_segments(home, crate::upstream::MCP_PATCH_SEGMENTS)
 }
 
-fn read_patch(path: &Path) -> Result<Vec<Value>, String> {
+/// （picker.rs 同文件复用）读 patch 顶层 op 序列；文件不存在/空 = 空序列，BOM 容忍
+pub(crate) fn read_patch(path: &Path) -> Result<Vec<Value>, String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Ok(Vec::new()); // 文件不存在 = 空补丁
     };
@@ -62,7 +63,8 @@ fn read_patch(path: &Path) -> Result<Vec<Value>, String> {
     })
 }
 
-fn write_patch(path: &Path, entries: &[Value]) -> Result<(), String> {
+/// （picker.rs 同文件复用）tmp+rename 原子写；空序列落 `[]\n`
+pub(crate) fn write_patch(path: &Path, entries: &[Value]) -> Result<(), String> {
     let text = if entries.is_empty() {
         "[]\n".to_string()
     } else {
@@ -150,6 +152,14 @@ fn list_servers(home: &Path) -> Result<Vec<McpServerRow>, String> {
         .iter()
         .map(|&p| to_row(entry_at(&entries, p)))
         .collect())
+}
+
+/// （picker.rs 共存测试/诊断）列出全部 serverName；解析失败按空处理
+#[cfg(test)]
+pub(crate) fn list_servers_in(home: &Path) -> Vec<String> {
+    list_servers(home)
+        .map(|rows| rows.into_iter().map(|r| r.server_name).collect())
+        .unwrap_or_default()
 }
 
 fn valid_server_name(n: &str) -> bool {

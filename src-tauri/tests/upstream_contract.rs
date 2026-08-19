@@ -392,6 +392,74 @@ fn probe_remote_needles(rt: &Path, c: &mut Checker) {
     );
 }
 
+/// dsh plugin 子命令（plugins.rs 的装/卸/更新依赖它；上游改版即红）
+fn probe_plugins_cli(rt: &Path, c: &mut Checker) {
+    let text = fs::read_to_string(upstream::dsh_bin(rt)).unwrap_or_default();
+    c.check(
+        "bin.js 定义 plugin 子命令",
+        text.contains(r#"command("plugin")"#),
+        "bin.js 找不到 command(\"plugin\")",
+        "上游改了 plugin 入口：查 bin.js 并改 upstream::DSH_PLUGIN_SUBCOMMAND/FLAG（影响 plugins.rs）",
+    );
+    c.check(
+        "plugin 子命令要求 --profile",
+        text.contains(r#"requiredOption("--profile <name>","#),
+        "bin.js 找不到 requiredOption(\"--profile <name>\")",
+        "同上：改 upstream::DSH_PLUGIN_PROFILE_FLAG（影响 plugins.rs）",
+    );
+}
+
+/// 目录选择器钉 browse 的前提（picker.rs/mobile.css 依赖；上游改版即红）
+fn probe_picker(rt: &Path, c: &mut Checker) {
+    let nm = upstream::dsh_node_modules_dir(rt);
+    // 1) shipped bundle patch 仍有 id=directory-picker 的 auto 行（picker.rs 的
+    //    disable 目标）。bundle patch 形态：顶层 op 序列，行嵌在 insert 列表里。
+    let bundle_patch = nm
+        .join("@deepseek-ai")
+        .join("dsh-web-app")
+        .join("cordis.patch.yml");
+    let found_auto = fs::read_to_string(&bundle_patch)
+        .ok()
+        .and_then(|t| serde_yaml::from_str::<serde_yaml::Value>(&t).ok())
+        .and_then(|v| v.as_sequence().cloned())
+        .map(|ops| {
+            ops.iter().any(|op| {
+                op.get("insert")
+                    .and_then(serde_yaml::Value::as_sequence)
+                    .is_some_and(|rows| {
+                        rows.iter().any(|r| {
+                            r.get("id").and_then(serde_yaml::Value::as_str)
+                                == Some(upstream::PICKER_AUTO_ROW_ID)
+                                && r
+                                    .get("name")
+                                    .and_then(serde_yaml::Value::as_str)
+                                    .is_some_and(|n| n.ends_with("directory-picker-auto"))
+                        })
+                    })
+            })
+        })
+        .unwrap_or(false);
+    c.check(
+        "bundle patch 含 id=directory-picker 的 auto 行",
+        found_auto,
+        format!("path={bundle_patch:?}"),
+        "上游改了行 id 或撤掉 auto：改 upstream::PICKER_AUTO_ROW_ID（picker.rs 的 disable 目标）；若上游默认 browse 了，删除 picker.rs 与本探测",
+    );
+    // 2) browse 对的两个包仍在依赖闭包（insert 行能被 Loader 解析的前提）
+    for pkg in [
+        upstream::PICKER_BROWSE_HOST_PKG,
+        upstream::PICKER_BROWSE_SURFACE_PKG,
+    ] {
+        let dir = nm.join("@deepseek-ai").join(pkg.rsplit('/').next().unwrap());
+        c.check(
+            &format!("browse 包存在：{pkg}"),
+            dir.join("package.json").is_file(),
+            format!("dir={dir:?}"),
+            "包改名/移除：改 upstream::PICKER_BROWSE_*_PKG（picker.rs 的 insert 目标）",
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn upstream_contract() {
     let Some(rt) = runtime_dir() else {
@@ -400,6 +468,8 @@ async fn upstream_contract() {
     };
     let mut c = Checker::default();
     let version = probe_entry(&rt, &mut c);
+    probe_plugins_cli(&rt, &mut c);
+    probe_picker(&rt, &mut c);
     probe_presets(&rt, &mut c);
     probe_remote_needles(&rt, &mut c);
     match spawn_dsh(&rt).await {

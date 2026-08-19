@@ -383,6 +383,10 @@ async fn injects_mobile_css_into_html_documents() {
         "注入内容应含移动端媒体查询且保留 </head>：{body}"
     );
     assert!(
+        body.contains("_millerRow"),
+        "注入内容应含目录浏览对话框的适配规则（picker.rs 钉的 browse 交互）：{body}"
+    );
+    assert!(
         body.contains("</style><script>") && body.contains("data-dshmobile-tab"),
         "应注入信息标签页脚本：{body}"
     );

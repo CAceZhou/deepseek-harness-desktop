@@ -49,6 +49,8 @@ dsh 本身提供 `dsh web` 命令：在本机 127.0.0.1 上启动一个 Web UI �
 │  settings.rs 壳设置：settings.json 模型/校验/持久化 + get/set/试听命令      │
 │  skills.rs   技能管理：skills/ ↔ skills-disabled/ 移动开关 + 三源/ZIP 导入   │
 │  mcp.rs      MCP 管理：cordis.patch.yml 条目读写/启停 + 三源导入           │
+│  picker.rs   目录选择器钉 browse：幂等写 cordis.patch.yml（禁 auto 行       │
+│              + insert browse 对），手机远程端才能选文件夹                  │
 │  remote/     远程访问：token 门岗反向代理 + cloudflared 隧道监督            │
 │  platform/   Platform trait（windows.rs 实现；macos/linux 为编译期占位）   │
 └──────────────────────────────────┬───────────────────────────────────────┘
@@ -174,19 +176,20 @@ dsh WS /api/events.host ─▶ WsSource(host) ─▶ handle_host_frame ─▶ Se
 - `#/diagnostics` **Diagnostics.svelte**：诊断面板（状态/端口/PID/版本、500 行实时日志回填 + `dsh-log` 事件流、重启按钮、开机自启开关）。
 - `#/settings` **Settings.svelte**：其它设置（开机自启、关窗行为单选、三类通知提醒——任务确认/选项选择/回答完毕，各带启用勾选 + 仅后台时/总是时机下拉，回答完毕行关联完成提示音与试听、缩放步进 1%–25%、放大/缩小快捷键录制器）。保存时前端先校验（至少一个修饰键、in/out 不冲突），再 `invoke('set_shell_settings', { next })` 由 Rust 端复验并落盘。
 - `#/skills` **Skills.svelte**：技能管理。数据源是**壳注入给 dsh 的 DSH_HOME**（`<runtime_base>/dsh-home`，不是 `~/.dsh`）：`skills/` 为启用、旁路 `skills-disabled/` 为停用（dsh 的技能发现只认根目录直属条目、无原生禁用概念；移出根目录即停用，watcher 观察到变化后热刷新 catalog，无需重启）。导入从三个外部 agent 的用户级源复制目录：Codex `~/.codex/skills`、Claude Code `~/.claude/skills`、OpenCode `~/.config/opencode/skills`；同名冲突逐个选覆盖/跳过（覆盖会同时清掉禁用目录里的旧副本）。**独立 dsh 的默认目录 `~/.dsh/skills` 不作为导入源**——壳就是 dsh，启动时自动扫描它并补入新技能（`skills::seed_from_default_dsh_home`；`.skills-seeded` marker 记录已见名字，壳里删掉的不会复活）。删除只删 home 内副本，不动源目录。还可本地导入 ZIP 压缩包（`inspect_zip_skills`/`import_zip_skills`）：自动识别两种布局——包根直接含 SKILL.md（名字取 frontmatter name，缺失回退 zip 文件名）或顶层若干技能文件夹各含 SKILL.md；解包剥掉顶层前缀，条目路径经 enclosed_name 过滤防 zip-slip，另有 1 万条目/256MB 上限防 zip 炸弹；冲突语义与目录导入一致（跳过/覆盖，覆盖清两侧）。Rust 侧 `skills.rs` 的 frontmatter 解析只取单行键，行上操作均以目录名为准。
+- `#/plugins` **Plugins.svelte**：插件管理（npm/cordis 插件的图形化装/卸/更新，详见 §18）。
 - `#/mcp` **Mcp.svelte**：MCP server 管理（列表/启停/删除/新增/编辑 + 导入）。dsh 没有独立的 mcp.json——MCP server 是 Cordis 插件补丁，壳读写 `<dsh-home>/profiles/web/cordis.patch.yml` 中 `name == '@deepseek-ai/dsh-mcp-client'` 的 insert 条目（只动这些条目，其余 Value 级保留；tmp+rename 原子写；读前剥 BOM）。dsh 的 HMR（`watchUserPatches` + chokidar）监听该文件，改后自动 disconnect+reconnect，**无需重启**。启停 = entry 上加/去 `disabled: true`（cordis-plugin-loader 原生语义，disabled 的 entry 不起 fiber）。编辑以旧 config 为底、只覆盖表单字段，`toolCallTimeoutMs`/`reconnect.*` 等高级键保留；transport 只有 `stdio`（command/args/env/cwd）与 `streamable-http`（url/headers）两种，sse 不支持。启动时种子同步 `~/.dsh` 两层 patch 里的 MCP 条目（`mcp::seed_from_default_dsh_home`，`.mcp-seeded` marker 防复活；源里 disabled 的不同步也不记 marker，日后在 ~/.dsh 启用时仍能进来）。手动导入三源：Claude Code `~/.claude.json` 的 `mcpServers`（stdio/http 映射，sse 标记"不支持"跳过）、Codex `~/.codex/config.toml` 的 `[mcp_servers.*]`（`enabled=false` 不列出）、OpenCode `~/.config/opencode/opencode.json` 的 `mcp` 段（local/remote 映射）；冲突逐个覆盖/跳过。patch 文件解析失败（如含无法处理的语法）时页面降级为只读并提示手工编辑。
 - `#/remote` **Remote.svelte**：远程访问。状态取 `get_remote_status` 快照并订阅 `remote-status` 事件；Up 态显示二维码（`get_remote_qr` 返回 SVG）与完整链接，链接变化（隧道重连换域名）自动重取二维码；开关按钮按当前 phase 调 `start_remote` / `stop_remote`。
 
 窗口行为：
 
-- 主窗口 `main`：**关窗行为可配置**（settings.json 的 `close_behavior`）：默认 `background` = 隐藏到托盘（`CloseRequested` 时 `prevent_close` + `hide`），`quit` = 走托盘"退出"同一流程直接退出程序；托盘"打开主界面"或二次启动（单实例插件）时 `show` + `unminimize` + `set_focus`。
-- 诊断窗口 `diagnostics`、设置窗口 `settings`、技能窗口 `skills`、MCP 窗口 `mcp`、远程访问窗口 `remote`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
+- 主窗口 `main`：**关窗行为可配置**（settings.json 的 `close_behavior`）：默认 `background` = 隐藏到托盘（`CloseRequested` 时 `prevent_close` + `hide`），`quit` = 走托盘"退出"同一流程直接退出程序；托盘"打开主界面"、**左键单击托盘图标**（`on_tray_icon_event` 的 Left/Up；`show_menu_on_left_click(false)`，菜单改走右键）或二次启动（单实例插件）时 `show` + `unminimize` + `set_focus`——窗口只是隐藏未销毁，位置保持隐藏前状态。
+- 诊断窗口 `diagnostics`、设置窗口 `settings`、技能窗口 `skills`、插件窗口 `plugins`、MCP 窗口 `mcp`、远程访问窗口 `remote`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。
 - 托盘"退出"：先 `stop()` 远程访问（杀 cloudflared 进程树 + 关停鉴权代理，链接即刻失效），再 `stop()` dsh，等 1.5s 让监督循环杀完进程树，最后 `exit(0)`。
 - 导航到远程 URL 后窗口标题被 dsh 的 `document.title` 覆盖——**外部脚本不要按标题找窗口**（按 PID + 类名，见 `scripts/shot-window.ps1`）。
 - **首次启动居中**：主窗口（setup 里 builder `.center()`，tauri.conf `windows` 已空）与托盘按需创建的五个窗口都以屏幕居中为默认位置；window-state 插件的 restore 在 window_created 时排队、早于首个可见帧执行，有记忆几何时覆盖居中默认值——首次启动居中、之后按上次位置，居中默认不会闪一帧再跳变（verify-no-size-flash.ps1 探针断言首个可见帧即记忆几何）。
 - **下载处理（download.rs）**：WebView2 的下载不接管则静默消失——wry 默认 handler 放行但 `SetHandled(true)` 抑制了下载 UI，用户看不到文件去向（dsh "Session log" 导出即受此影响）。主窗口 builder 挂 `on_download`：Requested 时把目标改到系统下载目录（`dirs::download_dir`，已存在则追加 " (n)" 序号防覆盖），Finished 时按成败弹 toast 告知落盘路径；全程记 events.log（`Download: requested/finished`）。
 
-IPC 命令：commands.rs 8 个——`get_shell_ui_state` / `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill` / `inspect_zip_skills` / `import_zip_skills`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`、remote/mod.rs 的 `start_remote` / `stop_remote` / `get_remote_status` / `copy_remote_link` / `get_remote_qr`（共 28 个，见下）。
+IPC 命令：commands.rs 8 个——`get_shell_ui_state` / `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill` / `inspect_zip_skills` / `import_zip_skills`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`、plugins.rs 的 `get_plugin_status` / `list_plugins` / `search_plugins` / `install_plugin` / `uninstall_plugin` / `update_plugins`、remote/mod.rs 的 `start_remote` / `stop_remote` / `get_remote_status` / `copy_remote_link` / `get_remote_qr` / `reset_remote_link`、update.rs 的 `check_update` / `download_update` / `install_update` / `open_update_page`（共 41 个，见 build.rs AppManifest）。
 
 壳设置（settings.rs）：
 
@@ -199,7 +202,7 @@ UI 缩放（zoom.rs）：
 
 - **快捷键**：默认 `Ctrl+Shift+=` 放大、`Ctrl+Shift+-` 缩小（可在设置窗口自定义），步进默认 ±2 个百分点（可配 1%–25%，clamp 到 25%–500%）。钩子脚本由 `hook_js(&ShellSettings)` 生成——快捷键定义内嵌为 JSON，匹配逻辑与 `Shortcut::matches` 对齐：`e.code` 物理键位为主，`e.key` 兜底（合成按键与 RDP 注入的 keydown `e.code` 为空，纯 code 匹配会整组失效），meta 永不命中。`on_page_load` 在每次整页加载完成后 eval 注入（**只注入 main 窗口**——设置窗口录制快捷键时不能被钩子抢先拦截；本地 splash 与远程 dsh UI 通用），capture 阶段拦截并 invoke `zoom_ui`（负载 `direction: "in"/"out"`），经 WebView2 原生 `SetZoomFactor` 生效——与浏览器 Ctrl++ 同一机制。监听器可热替换（`__dshZoomHookHandler` 存旧 handler，重注入先 `removeEventListener` 再挂新的，不叠加）。
 - **持久化**：每次变更即写 `%LOCALAPPDATA%\DSHDesktop\ui-zoom.txt`；缺失/损坏回退 100%；每次页面加载时 `on_page_load` 统一重应用当前缩放（兼作 WebView2 重建后的兜底）。
-- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 28 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
+- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 41 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
 
 ## 10. 平台抽象
 
@@ -366,3 +369,29 @@ scripts/fetch-runtime.ps1
 - 4 个命令（check_update/download_update/install_update/open_update_page）走既有 ACL 三处同步（build.rs/capabilities/default.json；dsh-remote 不开）；未引入 opener 插件——`open_update_page` 用 rundll32 `FileProtocolHandler`（GUI 子系统不闪控制台），`install_update` 校验路径以 `_x64-setup.exe` 结尾后 spawn，随后走 `quit_app` 让本进程先行退出（安装器是本进程子进程，旧版钩子的 `taskkill /T` 会连它一起杀；本进程先死，钩子杀树即成空操作），用户在向导里完成覆盖安装
 - 启动时检查（开关开启时）在 setup 末尾 spawn：有新版弹 toast 指向其它设置页，失败只记 events.log
 - 单元测试只覆盖纯函数（版本解析/比较、资产选择、响应反序列化容错）；真实网络链路不进自动化，手动验收：其它设置 → 手动更新 → 进度条 → 立即安装
+## 18. 插件管理（plugins.rs）
+
+dsh 的"插件"= 声明了 `dsh.bundle` 的 npm 包（cordis bundle，装进 profile 后作为层加载，UI 插件出现在 `/plugins/<id>/client.js`）。装/卸/更新**全部走 dsh 官方 `plugin` 子命令**（`node bin.js plugin --profile web <pnpm args>`）：profile 首次使用时由上游初始化，`pnpm add/remove/update` 在 `<dsh-home>/profiles/web/` 里跑完，上游按**安装态**对账 `dsh.profile.bundles` 层列表（解析到声明 `dsh.bundle` 的包就入层栈，被移除或新版丢声明的就踢出）。壳**不自己写 bundles**——对账逻辑归上游，跟版只动 upstream.rs 常量 + 契约测试。
+
+**pnpm 壳内置**（`dsh plugin` 内部是 `spawnSync("pnpm", ...)`，Windows 上带 `shell: true` 走 cmd.exe 解析）：fetch-runtime.ps1 从 npm registry 下载 pnpm tarball，整包保留为 `<runtime>/pnpm/`（`bin/pnpm.cjs` → `./pnpm.mjs` → `../dist/pnpm.mjs`，dist 是 14MB standalone 全量 bundle，**不能摊平**），同时生成 `pnpm.cmd` 包装（调同目录 node.exe 跑 `pnpm\bin\pnpm.cjs`）——Windows 按 PATHEXT 只认 .exe/.cmd/.bat，没有 .cmd 包装 dsh 解析不到 pnpm。壳侧 spawn 时把 runtime 目录**前置到 PATH**（`.env("PATH", ...)` 全量保留原 PATH），dsh 内部即可解析到内置 pnpm，不污染用户环境。⚠️ 开发机测试时别用 Git Bash 手工验证 spawnSync 解析——msys 会把 `H:\...` 路径改写成 `H;C:\...` 伪失败；集成测试（cargo test，原生进程环境）是权威验证。
+
+**命令与数据流**（6 个，PluginsHome 状态托管 node_exe/dsh_bin/home/pnpm_dir，与 DshProcess 同源路径）：
+
+- `get_plugin_status`：pnpm 就绪态（`pnpm.cmd` + `pnpm\bin\pnpm.cjs` 都存在）+ `node pnpm.cjs --version` 实测版本 + profile 是否已初始化（`profiles/web/package.json` 存在）
+- `list_plugins`：读清单 `dependencies`（版本）与 `dsh.profile.bundles`（标"插件"徽章，其余标"依赖"）；文件缺失 → 空列表；BOM 容忍；解析失败显式报错
+- `search_plugins(q)`：npm registry search API（`registry.npmjs.org/-/v1/search`，reqwest 带 UA；外网走系统代理——与回环的 no_proxy 相反，同 update.rs 约定）；结果与已装列表交叉标"已安装"；查询 <2 字符直接返回空
+- `install_plugin(spec)` / `uninstall_plugin(name)` / `update_plugins()`：`run_plugin_op` 统一执行——`node bin.js plugin --profile web <args>`，DSH_HOME 注入、PATH 前置、无 shell（参数直接走 argv，杜绝注入）、`configure_child_command`（CREATE_NO_WINDOW 防闪控制台）、spawn 后 `register_child` 挂全局 Job Object（壳被杀连带回收，防孤儿）；输出 stdout+stderr 合并截断 200KB 返回。`validate_spec` 拦截空/超长/`-` 开头（防参数注入）。`busy` Mutex 串行锁：同一时刻只允许一个操作（try_lock 失败报"进行中"），防并发写 profile。
+
+**生效方式**：装/卸/更新**没有 MCP 那种 HMR**——新层经 profile manifest 在 web 启动时加载，完成后面板提示"重启 dsh 后生效"，内置"重启 dsh"按钮复用 `restart_dsh` 命令（装多个插件只需最后重启一次）。运行中安装不冲突（Node 模块文件句柄带共享删除标志，pnpm 增删无碍）；若 pnpm 报错引导先重启再重试。
+
+**已知取舍**：registry 搜索请求本身不进自动化测试（同 update.rs 策略，只测解析）；集成测试（`tests/plugins_integration.rs`，无运行时自动 skip）用真实 dsh bin.js + 假 pnpm.cmd 断言 profile 初始化、参数透传、cwd=profile 目录、退出码透传、PATH 注入生效；真实安装链路手动验收（托盘 → 插件管理 → 搜索 → 安装）。契约测试 `probe_plugins_cli` 探测 bin.js 的 `command("plugin")` 与 `requiredOption("--profile <name>")`——上游改版即红。
+
+## 19. 目录选择器钉 browse（picker.rs）
+
+dsh 新建工作区要选文件夹，选择器有两套交互，启动时由 `directory-picker-auto` 一次性决议：绑 127.0.0.1 + win32 ⇒ **native**（koffi 驱动 Win32 系统对话框，弹在电脑屏幕上）；非回环/SSH ⇒ **browse**（网页内嵌对话框）。壳的远程代理对 dsh 透明，dsh 永远决议 native——**手机远程端点"添加工作区"，系统对话框弹在电脑屏幕上，手机上什么都看不到，无法选择**。
+
+修复走上游官方 pin 方式（`apps/web/tests/pin-browse-picker.overlay.yml` 与 shipped bundle patch 行注释明示）：`picker::ensure_browse_picker` 在 spawn dsh 前往 `<dsh-home>/profiles/web/cordis.patch.yml` 幂等确保两条补丁——`{id: directory-picker, disabled: true}` 禁用 auto 行，insert `@deepseek-ai/dsh-host-directory-picker-browse`（host 列目录/建目录）+ `@deepseek-ai/dsh-client-ui-directory-picker-browse`（网页表面，占 ui-workspace 的 directory-flow 槽位）。与 mcp.rs 管理同一文件：mcp 只认 `name=='@deepseek-ai/dsh-mcp-client'` 的 insert 条目，picker 的三条互不命中，Value 级共存（read_patch/write_patch 复用 mcp.rs，BOM 容忍 + tmp+rename 原子写）；缺行补行、用户手加的 disabled 摘掉，只在有变化时写盘（无谓写会触发 HMR 重载）；失败只记 events.log 不阻断启动。
+
+**桌面端同步变为网页版对话框**（选择器是 dsh 启动期全局决议，无法桌面 native/手机 browse 并存）——功能不减：浏览全盘、面包屑、手输路径（前辍过滤）、新建文件夹、显示隐藏开关。对话框本体是上游 figma 设计（680×500 viewport-clamped，Miller 双栏窄屏横滚 + JS 自动钉右），mobile.css 只补一条：≤700px 时高度放宽到 `calc(100dvh - 48px)`（500px 上限在手机上列表仅 ~9 行），锚点 `_millerRow` 是该包独有 CSS Modules 本地名（`:has` 限定不误伤设置弹窗）。
+
+**跟版门禁**：`probe_picker` 契约探测——shipped bundle patch 仍含 `id: directory-picker` 的 auto 行（disable 目标）、两个 browse 包仍在依赖闭包（insert 行能被 Loader 解析）；上游若默认 browse 即可删 picker.rs。`remote_proxy.rs` 的注入测试断言 `_millerRow` 规则随 mobile.css 注入。

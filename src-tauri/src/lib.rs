@@ -12,7 +12,9 @@ pub mod i18n;
 pub mod mcp;
 pub mod notify;
 pub mod platform;
+pub mod plugins;
 pub mod port;
+pub mod picker;
 pub mod presets;
 pub mod process;
 pub mod progress;
@@ -84,6 +86,12 @@ pub fn run() {
             mcp::delete_mcp_server,
             mcp::list_mcp_import_sources,
             mcp::import_mcp_servers,
+            plugins::get_plugin_status,
+            plugins::list_plugins,
+            plugins::search_plugins,
+            plugins::install_plugin,
+            plugins::uninstall_plugin,
+            plugins::update_plugins,
             remote::start_remote,
             remote::stop_remote,
             remote::get_remote_status,
@@ -107,7 +115,7 @@ pub fn run() {
             // 必须经 .window() 拿到 Window 才能把窗口本身显示出来
             if matches!(
                 webview.label(),
-                "settings" | "diagnostics" | "skills" | "mcp" | "remote"
+                "settings" | "diagnostics" | "skills" | "plugins" | "mcp" | "remote"
             ) {
                 let _ = webview.window().show();
                 let _ = webview.window().set_focus();
@@ -181,7 +189,7 @@ pub fn run() {
             let sink: NotifySink = Arc::new(move |n: Notification| {
                 // 前台 = 本应用任一窗口处于聚焦态（主窗口可见但失焦 = 用户已切走，算后台）；
                 // 各类型按自己的规则（开关 + 时机）决定是否打扰
-                let foreground = ["main", "settings", "diagnostics", "skills", "mcp", "remote"]
+                let foreground = ["main", "settings", "diagnostics", "skills", "plugins", "mcp", "remote"]
                     .iter()
                     .filter_map(|l| sink_handle.get_webview_window(l))
                     .any(|w| w.is_focused().unwrap_or(false));
@@ -322,6 +330,12 @@ pub fn run() {
                 }
             };
             let deployed = deployed.load(Ordering::SeqCst);
+            // 插件管理：node/dsh/pnpm 全部来自壳分发运行时（与 DshProcess 同源路径）
+            handle.manage(plugins::PluginsHome::new(
+                paths.node_exe.clone(),
+                paths.dsh_bin.clone(),
+                paths.home.clone(),
+            ));
 
             let log_ring = diagnostics::LogRing::default();
             // 首启播种主题：settings.yaml 不存在时按系统深浅色预写 ui-theme.preference，
@@ -357,6 +371,16 @@ pub fn run() {
                     &debug_log,
                     &format!("presets: minimal win32 patch -> {preset_outcome:?}"),
                 );
+            }
+            // 目录选择器钉 browse：native 是弹在电脑屏幕上的系统对话框，手机远程端
+            // 不可见不可用（新建项目选不了文件夹）。必须在 spawn_supervised 之前完成；
+            // 失败只记 events.log 不阻断启动（回退现状）。
+            match picker::ensure_browse_picker(&paths.home) {
+                Ok(picker::PickerOutcome::AlreadyPinned) => {}
+                Ok(picker::PickerOutcome::Pinned) => {
+                    append_debug_line(&debug_log, "picker: pinned browse interaction")
+                }
+                Err(e) => append_debug_line(&debug_log, &format!("picker: pin failed: {e}")),
             }
             // block_on 提供 tokio runtime 上下文，spawn_supervised 内部的 tokio::spawn 依赖它
             let proc = tauri::async_runtime::block_on(async {

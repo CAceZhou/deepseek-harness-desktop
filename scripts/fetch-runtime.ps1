@@ -6,6 +6,7 @@ param(
   [string]$NodeVersion = '24.19.0',
   [string]$DshVersion = '0.1.0-rc.6',
   [string]$CloudflaredVersion = '2026.8.2',
+  [string]$PnpmVersion = '11.22.0',
   [string]$Triplet = 'windows-x64'
 )
 $ErrorActionPreference = 'Stop'
@@ -83,5 +84,24 @@ Remove-Job $job -Force -ErrorAction SilentlyContinue
 if (-not $ok) { throw 'dsh web 冒烟失败：60 次探测未得到 200' }
 Write-Host 'dsh web 冒烟通过（HTTP 200）'
 
-Set-Content (Join-Path $dest 'RUNTIME_VERSIONS.txt') "node $NodeVersion`r`ndsh $DshVersion`r`ncloudflared $CloudflaredVersion"
+# 7. pnpm standalone（壳内置：dsh plugin 的 spawnSync("pnpm") 经 pnpm.cmd 解析到它；
+#    包结构 bin/pnpm.cjs -> ./pnpm.mjs -> ../dist/pnpm.mjs，dist 是 14MB 全量 bundle，
+#    整包保留在 $dest\pnpm\ 下）
+Write-Host "下载 pnpm@$PnpmVersion ..."
+# 清掉历史残留（早期版本曾把 bin 摊平在 $dest 根）
+Remove-Item (Join-Path $dest 'pnpm') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $dest 'pnpm.cjs'), (Join-Path $dest 'pnpm.mjs'), `
+  (Join-Path $dest 'pnpx.cjs'), (Join-Path $dest 'pnpx.mjs') -Force -ErrorAction SilentlyContinue
+$pnpmTgz = Join-Path $dest "pnpm-$PnpmVersion.tgz"
+Invoke-WebRequest -Uri "https://registry.npmjs.org/pnpm/-/pnpm-$PnpmVersion.tgz" -OutFile $pnpmTgz
+# 显式用 Windows 自带 bsdtar：PATH 里的 Git Bash GNU tar 会把盘符路径当远程主机
+$winTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+& $winTar -xzf $pnpmTgz -C $dest
+if ($LASTEXITCODE -ne 0) { throw "tar 解包 pnpm tarball 失败" }
+Move-Item (Join-Path $dest 'package') (Join-Path $dest 'pnpm')
+Remove-Item $pnpmTgz -Force
+# pnpm.cmd 包装：dsh 内部 spawnSync("pnpm") 按 PATHEXT 只认 .exe/.cmd/.bat，不认 .cjs
+Set-Content (Join-Path $dest 'pnpm.cmd') "@echo off`r`n`"%~dp0node.exe`" `"%~dp0pnpm\bin\pnpm.cjs`" %*`r`n" -Encoding ascii
+
+Set-Content (Join-Path $dest 'RUNTIME_VERSIONS.txt') "node $NodeVersion`r`ndsh $DshVersion`r`ncloudflared $CloudflaredVersion`r`npnpm $PnpmVersion"
 Write-Host "运行时就绪：$dest"
