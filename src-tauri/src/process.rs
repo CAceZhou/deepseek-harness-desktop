@@ -131,6 +131,9 @@ impl DshProcess {
                 .arg(crate::upstream::DSH_WEB_SUBCOMMAND)
                 .arg(crate::upstream::DSH_PORT_FLAG)
                 .arg(port.to_string())
+                // dsh-web-app 默认把 Web UI 丢给系统默认浏览器；壳内嵌 WebView
+                // 就是浏览器，必须抑制（否则每次启动额外弹浏览器标签页）
+                .arg(crate::upstream::DSH_NO_OPEN_FLAG)
                 .env("DSH_HOME", &self.inner.paths.home)
                 .current_dir(&self.inner.paths.work_dir)
                 .stdout(Stdio::piped())

@@ -33,7 +33,9 @@ src-tauri/src/
   platform/         平台抽象 trait（多平台预留）；windows.rs 实现（含 job 模块：
                     全局 KILL_ON_JOB_CLOSE Job Object，register_child 把每个子进程挂进去，
                     父进程被强杀时内核连带回收整树，防孤儿锁 runtime）；macos/linux 待实现
-  process.rs        DshProcess 监督循环：spawn node bin.js web --port N、指数退避、stop/restart
+  process.rs        DshProcess 监督循环：spawn node bin.js web --port N --no-open
+                    （dsh-web-app rc.8 起 openBrowser 默认 true，不带则每次启动
+                    额外弹系统浏览器）、指数退避、stop/restart
   runtime.rs        ensure_runtime：安装目录可写则原地运行内嵌运行时；只读则回退部署副本
                     （.version 比对）；原地模式会清理旧版留下的 %LOCALAPPDATA% 部署副本
   notify/           WS 事件源（ws.rs 泛化 {path, handler, on_connect}，连 events.mux +
@@ -95,6 +97,13 @@ src-tauri/src/
                     与 mcp.rs 同文件 Value 级共存（条目互不命中），spawn 前
                     完成，失败只记 events.log；桌面端同步变网页版对话框
                     （功能不减：浏览全盘/新建文件夹/手输路径）
+  welcome.rs        内测声明豁免播种：dsh 的 welcome notice（"内测声明"对话框）
+                    在 settings.yaml 的 ui-onboarding.welcomeNoticeVersion ≠ 当前
+                    文案版本时每次启动弹窗；启动时从运行时 client.js 提取文案版本
+                    预写进 settings.yaml（Value 级改写其余键不动，BOM 容忍，
+                    tmp+rename 原子写，须在主题播种之后——它只在文件缺失时写），
+                    桌面用户永不见对话框；needle 由契约套件守门，失败只记
+                    events.log 不阻断启动（回退为 dsh 原生弹一次）
   update.rs         检查更新：GitHub releases/latest API（必带 UA；走系统代理——
                     外网场景，与回环必须 no_proxy 相反）、版本比较（自实现，
                     解析失败按非新版）、下载 *_x64-setup.exe 到系统下载目录
@@ -115,7 +124,8 @@ src-tauri/src/
                     HTML 文档注入移动端适配（accept 含 text/html 且 identity ≤4MB）：
                     mobile.css 700px 断点，设置弹窗全屏+横向 tab、侧栏抽屉化、
                     模型选择器图标化、触发器菜单包含块修复（position:static 上移到
-                    输入卡片）；mobile.js 在"对话/轨迹"旁加"信息"标签页——统计行
+                    输入卡片）、目录浏览对话框近全屏且 footer 四控件一行均分
+                    （原 wrap 把"打开"挤到第二行）；mobile.js 在"对话/轨迹"旁加"信息"标签页——统计行
                     克隆进面板（MutationObserver 同步，克隆而非搬家：React 对被移
                     节点 removeChild 必崩），enhanced 标记隐藏原行且跟随
                     matchMedia 断点（离开 700px 摘除，防宽屏统计无处可见）；
@@ -155,7 +165,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（179 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
+cd src-tauri && cargo test            # 全部测试（184 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -168,7 +178,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
   每次保存设置都弹"系统找不到指定的文件 (os error 2)"。先 is_enabled() 比目标态，
   已达成即 Ok（commands.rs 有锚定测试）
 
-- **dsh 事实**：Node `^22.19 || >=24`；入口 `lib/bin.js`；`dsh web` 只许绑 127.0.0.1；事件走 **WebSocket** `/api/events.mux` + `/api/events.host`（GET 返回 426），帧格式 `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定看 `session/event` 里的 `turn/end`（`data.reason.kind=="completed"`），子代理标记看 `host/session-added` 的 `origin`；设置在 `$DSH_HOME/settings.yaml` 的 `ui-theme.preference`（light/dark/system）
+- **dsh 事实**：Node `^22.19 || >=24`；入口 `lib/bin.js`；`dsh web` 只许绑 127.0.0.1 且 **dsh-web-app rc.8 起默认把 UI 弹给系统默认浏览器**（spawn 必带 `--no-open`，壳内嵌 WebView 就是浏览器）；事件走 **WebSocket** `/api/events.mux` + `/api/events.host`（GET 返回 426），帧格式 `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定看 `session/event` 里的 `turn/end`（`data.reason.kind=="completed"`），子代理标记看 `host/session-added` 的 `origin`；设置在 `$DSH_HOME/settings.yaml` 的 `ui-theme.preference`（light/dark/system）；**npm 依赖是浮动区间**（dsh 根包 rc 固定、子包解析到最新 rc），跟版靠契约套件守门
 - **运行时布局**：暂存 `src-tauri/runtime/<triplet>/`，tauri.conf `resources` 用映射形式
   `{ "runtime": "runtime", "resources/sounds": "sounds" }`，安装后 `<install>/runtime/<triplet>/`
   与 `<install>/sounds/*.wav`（自定义提示音在 exe 旁/资源根找 `sounds/`，映射让它们落对位——
@@ -206,7 +216,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 179 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 184 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 

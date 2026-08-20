@@ -26,6 +26,7 @@ pub mod theme;
 pub mod tray;
 pub mod upstream;
 pub mod update;
+pub mod welcome;
 pub mod zoom;
 
 use notify::{Notification, NotifySink, NotifySource};
@@ -371,6 +372,17 @@ pub fn run() {
                     &debug_log,
                     &format!("presets: minimal win32 patch -> {preset_outcome:?}"),
                 );
+            }
+            // 内测声明豁免播种：预写 ui-onboarding.welcomeNoticeVersion（当前文案
+            // 版本提取自运行时 client.js），否则 dsh 在未确认时每次启动弹"内测声明"
+            // 对话框。须在主题播种（它只在文件缺失时写）之后、spawn_supervised 之前；
+            // 失败只记 events.log 不阻断启动（回退为 dsh 原生弹一次）。
+            match welcome::seed_welcome_notice(&paths.home, &paths.dsh_bin) {
+                Ok(welcome::WelcomeOutcome::AlreadySeeded) => {}
+                Ok(welcome::WelcomeOutcome::Seeded) => {
+                    append_debug_line(&debug_log, "welcome: seeded notice ack")
+                }
+                Err(e) => append_debug_line(&debug_log, &format!("welcome: seed failed: {e}")),
             }
             // 目录选择器钉 browse：native 是弹在电脑屏幕上的系统对话框，手机远程端
             // 不可见不可用（新建项目选不了文件夹）。必须在 spawn_supervised 之前完成；

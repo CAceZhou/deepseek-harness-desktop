@@ -4,7 +4,8 @@
 //! tests/upstream_contract.rs 红了就对照本文件逐条改（每条注明上游出处
 //! 与影响面）。事实清单的文档形态见 docs/design.zh-CN.md §15。
 //!
-//! 当前事实基线：@deepseek-ai/dsh 0.1.0-rc.6（npm latest 通道）。
+//! 当前事实基线：@deepseek-ai/dsh 0.1.0-rc.7（npm latest 通道；子包为浮动区间，
+//! 抓取时解析到最新 rc，如 dsh-web-app rc.8 引入 openBrowser 默认 true）。
 
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,11 @@ pub fn dsh_node_modules_dir(runtime_dir: &Path) -> PathBuf {
 /// 上游出处：bin.js 的 web 子命令，仅绑 127.0.0.1。
 pub const DSH_WEB_SUBCOMMAND: &str = "web";
 pub const DSH_PORT_FLAG: &str = "--port";
+/// dsh-web-app 的 openBrowser 默认 true（rc.8 起；startup.js webCommand 定义
+/// `--no-open` 反向开关），就绪后把 Web UI 丢给系统默认浏览器——壳内嵌 WebView
+/// 就是浏览器，spawn 必须带此旗标，否则每次启动额外弹系统浏览器。
+/// 影响：process.rs spawn 参数。
+pub const DSH_NO_OPEN_FLAG: &str = "--no-open";
 
 // ── 事件通道（lib.rs 接线；帧事实 notify/mod.rs 分类）────
 /// 会话事件下行（GET 返回 426，仅 WS）。影响：lib.rs WsSource、notify/ws.rs。
@@ -66,6 +72,20 @@ pub const SETTINGS_FILE: &str = "settings.yaml";
 pub const KEY_UI_THEME: &str = "ui-theme";
 pub const KEY_LOCALE: &str = "locale";
 pub const KEY_PREFERENCE: &str = "preference";
+
+// ── 内测声明（welcome.rs 首启豁免播种）────────────────────
+/// dsh-client-ui-settings-models 的 welcome notice（"内测声明"对话框）：设置
+/// 命名空间 ui-onboarding 的 welcomeNoticeVersion ≠ 当前文案版本时每次启动弹窗
+/// （dsh-client-ui-settings-models/lib/client.js 的 WelcomeNoticeStore）。
+/// 壳面向最终用户，启动时把运行时里提取的文案版本预写进 settings.yaml。
+/// 影响：welcome.rs。
+pub const WELCOME_NOTICE_NAMESPACE: &str = "ui-onboarding";
+pub const WELCOME_NOTICE_ACK_FIELD: &str = "welcomeNoticeVersion";
+/// 文案版本提取 needle（client.js 未压缩，形如 `WELCOME_NOTICE_VERSION = "2026-08-13.1"`）。
+pub const WELCOME_NOTICE_VERSION_NEEDLE: &str = "WELCOME_NOTICE_VERSION = \"";
+/// 定义文案版本的插件包路径（相对 dsh 前缀的 node_modules）。
+pub const WELCOME_NOTICE_CLIENT_SEGMENTS: &[&str] =
+    &["@deepseek-ai", "dsh-client-ui-settings-models", "lib", "client.js"];
 
 // ── MCP（mcp.rs 读写 cordis.patch.yml）───────────────────
 /// 补丁文件的 DSH_HOME 相对路径。上游出处：cordis profile 加载器。

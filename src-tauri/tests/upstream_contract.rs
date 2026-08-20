@@ -116,6 +116,9 @@ async fn spawn_dsh(rt: &Path) -> Result<Dsh, String> {
         .arg(upstream::DSH_WEB_SUBCOMMAND)
         .arg(upstream::DSH_PORT_FLAG)
         .arg(port.to_string())
+        // 与 process.rs 的 spawn 形一致：抑制 dsh 默认弹系统浏览器
+        // （rc.7 起 openBrowser 默认 true，不探它契约套件每跑一次弹一次浏览器）
+        .arg(upstream::DSH_NO_OPEN_FLAG)
         .env("DSH_HOME", home.path())
         .current_dir(home.path())
         .stdout(Stdio::null())
@@ -215,6 +218,39 @@ fn probe_entry(rt: &Path, c: &mut Checker) -> String {
     } else {
         eprintln!("[note] 发布包未声明 engines.node：Node 下限事实以 §15 文档（^22.19 || >=24）为准");
     }
+
+    // dsh-web-app rc.7 起 openBrowser 默认 true：壳靠 --no-open 抑制系统浏览器弹出
+    let web_help = Command::new(&node)
+        .arg(&bin)
+        .arg(upstream::DSH_WEB_SUBCOMMAND)
+        .arg("--help")
+        .output();
+    c.check(
+        "web --help 含 --no-open（壳依赖它抑制系统浏览器弹出）",
+        matches!(&web_help, Ok(o) if String::from_utf8_lossy(&o.stdout).contains(upstream::DSH_NO_OPEN_FLAG)),
+        format!("{web_help:?}").chars().take(120).collect::<String>(),
+        "--no-open 旗标变了：改 upstream::DSH_NO_OPEN_FLAG（影响 process.rs）",
+    );
+
+    // 内测声明豁免播种的事实：client.js 位置 + 版本 needle + 命名空间/字段名
+    let welcome_client = upstream::join_segments(
+        &upstream::dsh_node_modules_dir(rt),
+        upstream::WELCOME_NOTICE_CLIENT_SEGMENTS,
+    );
+    let welcome_text = fs::read_to_string(&welcome_client).unwrap_or_default();
+    c.check(
+        "内测声明 client.js 存在且含文案版本 needle",
+        !welcome_text.is_empty() && welcome_text.contains(upstream::WELCOME_NOTICE_VERSION_NEEDLE),
+        welcome_client.display(),
+        "文案版本形态变了：改 upstream::WELCOME_NOTICE_*（影响 welcome.rs）",
+    );
+    c.check(
+        "内测声明命名空间 ui-onboarding / 字段 welcomeNoticeVersion 未变",
+        welcome_text.contains(upstream::WELCOME_NOTICE_NAMESPACE)
+            && welcome_text.contains(upstream::WELCOME_NOTICE_ACK_FIELD),
+        format!("needle 命中但命名空间/字段缺失（client.js {} bytes）", welcome_text.len()),
+        "设置键变了：改 upstream::WELCOME_NOTICE_NAMESPACE/ACK_FIELD（影响 welcome.rs）",
+    );
     version
 }
 

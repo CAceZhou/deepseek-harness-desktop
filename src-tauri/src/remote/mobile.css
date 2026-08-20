@@ -121,13 +121,39 @@
   /*
    * 目录浏览对话框（picker.rs 钉的 browse 交互）：原生高度上限 500px，手机
    * 844px 视口上下留白过大、列表仅 ~9 行。放宽到近全屏（保留 24px 上下边距
-   * 与圆角，与其它弹窗视觉一致）。footer 四控件窄屏已自行两行换行，无需处理；
-   * Miller 双栏横滚 + JS 自动钉右是上游的手机形态，不动。
+   * 与圆角，与其它弹窗视觉一致）。Miller 双栏横滚 + JS 自动钉右是上游的
+   * 手机形态，不动。
    * 锚点 _millerRow 是该包独有的 CSS Modules 本地名（全 node_modules 已核实），
    * :has 限定不误伤设置弹窗；上游改名则回到 500px 上限，功能不损。
    */
   [role="dialog"]:has([class*="_millerRow"]) {
     height: calc(100dvh - 48px);
+  }
+
+  /*
+   * 同上对话框的 footer 四控件（新建文件夹 / 显示隐藏文件 / 取消 / 打开）：
+   * 原生 flex-wrap:wrap 在手机上把"打开"挤到第二行，且弹性占位把行撑得
+   * 参差不齐。改一行均分：nowrap、去掉 footerGap、四项 flex 等分、按钮
+   * min-width 归零并收紧内边距（原生 72px 最小宽 + 24px 侧距在 390px
+   * 视口必然换行）；显示隐藏开关字号同步收紧居中。
+   */
+  [role="dialog"]:has([class*="_millerRow"]) [class*="_footerBar"] {
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  [role="dialog"]:has([class*="_millerRow"]) [class*="_footerGap"] {
+    display: none;
+  }
+  [role="dialog"]:has([class*="_millerRow"]) [class*="_footerBar"] > * {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  [role="dialog"]:has([class*="_millerRow"]) [class*="_footerBar"] > [class*="_showHiddenToggle"] {
+    justify-content: center;
+    font-size: 12px;
   }
 
   /*
