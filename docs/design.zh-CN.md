@@ -231,7 +231,7 @@ pub trait Platform: Send + Sync {
 ```
 scripts/fetch-runtime.ps1
   1. 下载 Node v24.19.0 win-x64 zip，只取 node.exe
-  2. npm install --prefix dsh --omit=dev @deepseek-ai/dsh@0.1.0-rc.7
+  2. npm install --prefix dsh --omit=dev @deepseek-ai/dsh@0.1.0-rc.8
   3. 冒烟：node bin.js --help
   4. 调 scripts/prune-runtime.ps1 精简
 产物：src-tauri/runtime/windows-x64/（gitignore，不入库）
@@ -313,14 +313,14 @@ scripts/fetch-runtime.ps1
 
 **回滚**：新版 dsh 出严重问题、壳又要先发补丁时，`-DshVersion` 回退到上一可用版本重打包即可——用户数据全在 `dsh-home`，与 dsh 版本解耦。
 
-## 15. 附录：dsh 上游事实清单（0.1.0-rc.7）
+## 15. 附录：dsh 上游事实清单（0.1.0-rc.8）
 
 > 本表是文档形态；代码化身在 `src-tauri/src/upstream.rs`（单一事实源），
 > 自动核对由 `tests/upstream_contract.rs` 执行。跟版改了 upstream.rs 就同步本表。
 
 | 事实 | 值 |
 | --- | --- |
-| npm 包 | `@deepseek-ai/dsh@0.1.0-rc.7`（latest 通道；子包依赖为浮动区间，抓取时解析到最新 rc——dsh-web-app rc.8 起 openBrowser 默认 true） |
+| npm 包 | `@deepseek-ai/dsh@0.1.0-rc.8`（子包依赖为浮动区间，抓取时解析到最新 rc；npm latest 标签可能滞后于最新 rc，fetch 须显式 `-DshVersion`；dsh-web-app rc.8 起 openBrowser 默认 true） |
 | Node 要求 | `^22.19 \|\| >=24`（上游仓库声明；发布 tarball 不含 engines 字段，契约套件实测确认。随包内嵌 v24.19.0） |
 | 入口 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | Web 命令 | `bin.js web --port <N> --no-open`，仅绑 127.0.0.1；`--no-open` 抑制系统浏览器弹出（dsh-web-app rc.8 起 openBrowser 默认 true） |
@@ -329,7 +329,7 @@ scripts/fetch-runtime.ps1
 | 事件帧 | `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定用 `session/event` 里的 `turn/end`（`data.reason.kind`），子代理标记用 `host/session-added` 的 `origin` |
 | 设置文件 | `$DSH_HOME/settings.yaml` → `ui-theme.preference: light\|dark\|system` |
 | 信任栅栏 | 允许 loopback + 无 Origin 的 WS 连接 |
-| Agent 预设 | `config/agent-presets/{minimal,standard,code,cordis}`；standard/code/cordis 的 shell 工具有 win32 分支（tool-pwsh），minimal 无分支（PTY 持久 bash，win32 必败）→ 壳 presets.rs 启动期改写 |
+| Agent 预设 | `config/agent-presets/{minimal,standard,code,cordis}`；rc.8 起全部自带 win32 平台分支（minimal 的 persistent-bash/persistent-pwsh 按 `process.platform` 互斥禁用，subprocess-local 新增 win32 终端检查器）→ 壳的原地改写补丁器已退役，presets.rs 仅存只读签名探测（契约套件断言 UpstreamHandled 当回归哨兵） |
 | 目录选择器 browse | host `dsh-host-directory-picker-browse/lib/index.js`：`list()` 只认全限定路径、无盘符枚举入口；client `dsh-client-ui-directory-picker-browse/lib/client.js`：`showHidden` 默认 false 且开框重置、`displayCrumbs` 把 home 前缀折叠成"主页" → 壳 pickerpatch.rs 启动期原地补丁（`"dsh:drives"` 哨兵盘符层 + 默认显示隐藏 + 哨兵面包屑/禁用打开） |
 | 图片附件 | 输入仅拖拽/剪贴板两条入口；host `dsh-attachment` 只认 png/jpeg/webp/gif（sharp 校验，3.5MB/图、20 图/条）→ 壳 mobile.js 注入附件按钮走合成 paste 复用该管线（文档类型上游不支持） |
 | 预设根 | composeProfile 把 agent-presets 行 roots 强制重写为 shipped root（`config/agent-presets/`）；`$DSH_HOME/.agent-presets` 用户根追加在后，同名 id shipped 优先 |

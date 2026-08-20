@@ -372,16 +372,6 @@ pub fn run() {
                 .parent()
                 .map(|p| p.join("events.log"))
                 .unwrap_or_else(|| PathBuf::from("events.log"));
-            // win32：dsh rc 的极简模式预设挂载了 PTY 持久 bash（终端检查器未实现
-            // win32，每次调用必抛错）。dsh 启动前原地改写为 pwsh 变体；签名门控，
-            // 上游修复后自动停手。必须在 spawn_supervised 之前完成。
-            let preset_outcome = presets::patch_minimal_preset(&paths);
-            if preset_outcome != presets::PatchOutcome::AlreadyPatched {
-                append_debug_line(
-                    &debug_log,
-                    &format!("presets: minimal win32 patch -> {preset_outcome:?}"),
-                );
-            }
             // 内测声明豁免播种：预写 ui-onboarding.welcomeNoticeVersion（当前文案
             // 版本提取自运行时 client.js），否则 dsh 在未确认时每次启动弹"内测声明"
             // 对话框。须在主题播种（它只在文件缺失时写）之后、spawn_supervised 之前；

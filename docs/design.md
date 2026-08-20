@@ -236,7 +236,7 @@ pub trait Platform: Send + Sync {
 ```
 scripts/fetch-runtime.ps1
   1. download Node v24.19.0 win-x64 zip, keep only node.exe
-  2. npm install --prefix dsh --omit=dev @deepseek-ai/dsh@0.1.0-rc.6
+  2. npm install --prefix dsh --omit=dev @deepseek-ai/dsh@0.1.0-rc.8
   3. smoke test: node bin.js --help
   4. run scripts/prune-runtime.ps1 to slim it down
 output: src-tauri/runtime/windows-x64/ (gitignored, never committed)
@@ -317,21 +317,21 @@ Contract breaks mostly surface in `cargo test` (WS notification integration, the
 
 **Rollback**: if a new dsh turns out broken while the shell needs to ship a fix, revert `-DshVersion` to the last known-good version and rebundle — user data lives entirely in `dsh-home`, decoupled from the dsh version.
 
-## 15. Appendix: upstream dsh facts (0.1.0-rc.6)
+## 15. Appendix: upstream dsh facts (0.1.0-rc.8)
 
 > This table is the documentary form; its code form lives in `src-tauri/src/upstream.rs` (single source of truth), and `tests/upstream_contract.rs` verifies it automatically. When a tracking bump changes `upstream.rs`, sync this table.
 
 | Fact | Value |
 | --- | --- |
-| npm package | `@deepseek-ai/dsh@0.1.0-rc.6` |
+| npm package | `@deepseek-ai/dsh@0.1.0-rc.8` (subpackages use floating ranges and resolve to the newest rc at fetch time; the npm `latest` tag may lag the newest rc, so fetch must pass `-DshVersion` explicitly; dsh-web-app defaults `openBrowser` to true since rc.8) |
 | Node requirement | `^22.19 \|\| >=24` (declared in the upstream repo; the published tarball carries no engines field — confirmed by the contract suite. Bundled: v24.19.0) |
 | Entry point | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
-| Web command | `bin.js web --port <N>`, binds 127.0.0.1 only |
+| Web command | `bin.js web --port <N> --no-open`, binds 127.0.0.1 only; `--no-open` suppresses the system-browser popup (dsh-web-app defaults `openBrowser` to true since rc.8) |
 | Event channels | WebSocket `/api/events.mux` + `/api/events.host` (GET → 426, WS only) |
 | Event frame | `{"type":"server-request","method":<payload.type>,"payload":{...}}`; completion detection uses `turn/end` (`data.reason.kind`) inside `session/event`, subagent marking uses `origin` on `host/session-added` |
 | Settings file | `$DSH_HOME/settings.yaml` → `ui-theme.preference: light\|dark\|system` |
 | Trust fence | allows loopback + Origin-less WS connections |
-| Agent presets | `config/agent-presets/{minimal,standard,code,cordis}`; standard/code/cordis branch their shell tool by platform (tool-pwsh on win32), minimal does not (PTY persistent bash, always broken on win32) → rewritten at startup by the shell's presets.rs |
+| Agent presets | `config/agent-presets/{minimal,standard,code,cordis}`; since rc.8 all ship win32 platform branches (minimal gates persistent-bash/persistent-pwsh by `process.platform`, and subprocess-local gained a win32 terminal inspector) → the shell's in-place rewrite patcher is retired; presets.rs now only holds the read-only signature probe (the contract suite asserts `UpstreamHandled` as a regression sentinel) |
 | Preset roots | composeProfile force-rewrites the agent-presets row's roots to the shipped root (`config/agent-presets/`); the `$DSH_HOME/.agent-presets` user root is appended last and shipped wins duplicate ids |
 | WebView2 downloads | silently canceled unless the host handles DownloadStarting; wry's default allows them with the download UI suppressed → the shell's download.rs takes over explicitly |
 | License | MIT (Copyright 2026 DeepSeek) |

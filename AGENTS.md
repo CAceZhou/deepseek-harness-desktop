@@ -20,11 +20,12 @@ src-tauri/src/
   download.rs       主窗口下载处理：on_download 只能挂 builder（conf 窗口无法附加），
                     目标统一改到系统下载目录并 " (n)" 去重，完成/失败弹 toast + 记 events.log；
                     缺它时 wry 默认 handler 静默放行且抑制 WebView2 下载 UI，文件无声消失
-  presets.rs        启动期修复 shipped minimal(极简模式)预设：rc 里它无条件挂载 PTY
-                    持久 bash，而终端检查器未实现 win32 → 必抛 terminal inspection 错；
-                    原地改写为 tool-pwsh 变体（persona 补 {{cwd}} 与 PowerShell 事实），
-                    签名门控(上游加 win32 分支即停手)+marker 幂等，spawn 前完成；
-                    只读判定 preset_signature_state 与契约套件共用
+  presets.rs        minimal(极简模式)预设的上游签名探测（只读）：rc ≤rc.7 它无条件
+                    挂载 PTY 持久 bash 而终端检查器未实现 win32，本模块曾是启动期
+                    原地改写补丁（tool-pwsh 变体、签名门控+marker 幂等）；rc.8 上游
+                    自修（bash/pwsh 按 process.platform 互斥禁用 + koffi 版 win32
+                    检查器），补丁器退役，只读判定 preset_signature_state 留给
+                    契约套件当回归哨兵（上游回退修复→NeedsPatch→契约翻红）
   upstream.rs       dsh 上游内部事实单一来源（入口/命令形/WS 端点与帧/设置键/
                     cordis patch/预设签名/改写 needle，每条注明出处与影响面）；
                     跟版红了只改这一个文件；tests/upstream_contract.rs 对真实运行时
@@ -107,8 +108,9 @@ src-tauri/src/
                     与 mcp.rs 同文件 Value 级共存（条目互不命中），spawn 前
                     完成，失败只记 events.log；桌面端同步变网页版对话框
                     （功能不减：浏览全盘/新建文件夹/手输路径）
-  pickerpatch.rs    browse 选择器运行时补丁（presets.rs 同款签名门控+marker
-                    幂等原地改写，dsh 自更新还原后下次启动重打）：
+  pickerpatch.rs    browse 选择器运行时补丁（签名门控+marker 幂等原地改写，
+                    dsh 自更新还原后下次启动重打；presets.rs 补丁器退役后
+                    本模块是该模式的唯一使用者）：
                     host index.js 加 "dsh:drives" 哨兵层级（list 特判返回
                     A-Z 可用盘符根，ancestryCrumbs 对盘符根前插"此电脑"
                     crumb——否则面包屑在 home 子树内被折叠成"主页"，手机端
@@ -196,7 +198,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（189 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
+cd src-tauri && cargo test            # 全部测试（184 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -242,12 +244,12 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 - **缩放快捷键匹配**：主匹配 `e.code`，`e.key` 兜底（合成按键/RDP 注入 keydown 的 `e.code` 为空）；zoom_ui 负载是 `direction:"in"/"out"`，步进由命令读设置（不写死在脚本里）；改快捷键须重注入钩子（set_shell_settings 已做，热替换不叠加）
 - **reqwest 在系统代理下会劫持 127.0.0.1**：用户开 Clash 等系统代理时 reqwest 默认走代理且不认 bypass 列表——凡访问本机回环（remote/proxy.rs 转发客户端、测试里访问 fixture/代理端口的客户端）必须 `.no_proxy()`，否则请求被代理软件接管表现为假 502/挂起
 - **主窗口由 setup 代码创建（tauri.conf windows 为空）**：on_download 只能挂 WebviewWindowBuilder，conf 声明的窗口无法附加。建窗参数须与原 conf 一致（visible(false)+center()+min 900x600），window-state 对代码创建窗口同样在创建事件排队 restore（托盘按需窗口同款），回归靠 verify-no-size-flash/verify-window-state 两脚本
-- **dsh 预设不能经 profile patch 影子覆盖**：composeProfile 会把 agent-presets 行的 roots 无条件重写为 shipped root（用户层的 roots 被丢弃），且 shipped root 先于 $DSH_HOME/.agent-presets（同名 id shipped 优先）——所以 presets.rs 直接原地改写 shipped 预设文件。签名门控：上游内容出现 win32 分支或形态变化即停手，别放宽判定
-- **fs-local 列目录遇 ACL 拒绝项即整列失败**（如 C:\ 根目录撞上 DumpStack.log）：上游 dsh 行为，Windows 上列举系统盘根目录必现；壳侧缓解是让模型知道 cwd 并待在 workspace（极简模式 persona 已补），别试图在壳里修列目录
+- **dsh 预设不能经 profile patch 影子覆盖**：composeProfile 会把 agent-presets 行的 roots 无条件重写为 shipped root（用户层的 roots 被丢弃），且 shipped root 先于 $DSH_HOME/.agent-presets（同名 id shipped 优先）——这是当年 presets.rs 只能原地改写 shipped 预设文件的原因；rc.8 上游自修 win32 后补丁器已退役，但该上游事实仍成立（若需重引入补丁，仍旧不能走 patch 影子覆盖）
+- **fs-local 列目录遇 ACL 拒绝项即整列失败**（如 C:\ 根目录撞上 DumpStack.log）：上游 dsh 行为，Windows 上列举系统盘根目录必现；壳侧缓解是让模型知道 cwd 并待在 workspace（rc.8 起极简模式由上游 persistent-pwsh 的工具描述承担平台指引），别试图在壳里修列目录
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 189 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 184 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 

@@ -4,8 +4,8 @@
 //! tests/upstream_contract.rs 红了就对照本文件逐条改（每条注明上游出处
 //! 与影响面）。事实清单的文档形态见 docs/design.zh-CN.md §15。
 //!
-//! 当前事实基线：@deepseek-ai/dsh 0.1.0-rc.7（npm latest 通道；子包为浮动区间，
-//! 抓取时解析到最新 rc，如 dsh-web-app rc.8 引入 openBrowser 默认 true）。
+//! 当前事实基线：@deepseek-ai/dsh 0.1.0-rc.8（子包为浮动区间，抓取时解析到
+//! 最新 rc；npm latest 标签可能滞后，fetch-runtime.ps1 须显式 -DshVersion）。
 
 use std::path::{Path, PathBuf};
 
@@ -164,13 +164,16 @@ pub const PICKER_CLIENT_NEWFOLDER_DISABLED_NEEDLE: &str =
 pub const PICKER_CLIENT_LOCALE_ZH_NEEDLE: &str = r#""browser.showHidden": "显示隐藏文件""#;
 pub const PICKER_CLIENT_LOCALE_EN_NEEDLE: &str = r#""browser.showHidden": "Show hidden files""#;
 
-// ── 预设补丁签名（presets.rs；MARKER 与补丁内容是我方产物，不在此列）──
+// ── 预设签名（presets.rs 只读探测；补丁器已于 rc.8 退役，MARKER 与补丁
+// 内容曾是我方产物，随补丁器一并删除）──────────────────────────────────
 /// minimal 预设目录的包内相对路径。
 pub const PRESET_DIR_SEGMENTS: &[&str] = &["config", "agent-presets", "minimal"];
 pub const PRESET_COMPOSITION_FILE: &str = "agent.cordis.yml";
-/// 破损签名：引用了 PTY 持久 bash 工具（win32 终端检查器未实现，必抛错）。
+/// 破损签名：引用了 PTY 持久 bash 工具。rc.8 起该行仍在但带 win32 禁用门控
+/// （上游已自修），所以单凭此 needle 命中不再意味着需要补丁。
 pub const PRESET_BROKEN_NEEDLE: &str = "dsh-tool-bash-persistent";
-/// 上游若引入平台分支（内容出现 win32）视为已自行修复，补丁停手。
+/// 平台分支特征（内容出现 win32）。rc.8 起命中是**期望状态**（上游自修的
+/// 证据）；若哪天不再命中且破损签名仍在 = 上游回退了修复，契约套件翻红。
 pub const PRESET_PLATFORM_NEEDLE: &str = "win32";
 
 // ── 远程代理（remote/proxy.rs 的 bundle 改写）────────────

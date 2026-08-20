@@ -65,7 +65,7 @@ Prerequisites: Rust (stable), Node.js 22 or later, pnpm 11.
 pnpm install
 
 # prepare the bundled runtime (pick one)
-powershell -File scripts/fetch-runtime.ps1        # real runtime (Node 24 + dsh 0.1.0-rc.6 + cloudflared)
+powershell -File scripts/fetch-runtime.ps1        # real runtime (Node 24 + dsh 0.1.0-rc.8 + cloudflared)
 powershell -File scripts/use-fixture-runtime.ps1  # lightweight fake-dsh fixture for shell debugging
 
 pnpm tauri dev

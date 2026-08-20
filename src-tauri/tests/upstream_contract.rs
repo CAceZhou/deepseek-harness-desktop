@@ -117,7 +117,7 @@ async fn spawn_dsh(rt: &Path) -> Result<Dsh, String> {
         .arg(upstream::DSH_PORT_FLAG)
         .arg(port.to_string())
         // 与 process.rs 的 spawn 形一致：抑制 dsh 默认弹系统浏览器
-        // （rc.7 起 openBrowser 默认 true，不探它契约套件每跑一次弹一次浏览器）
+        // （dsh-web-app rc.8 起 openBrowser 默认 true，不探它契约套件每跑一次弹一次浏览器）
         .arg(upstream::DSH_NO_OPEN_FLAG)
         .env("DSH_HOME", home.path())
         .current_dir(home.path())
@@ -219,7 +219,7 @@ fn probe_entry(rt: &Path, c: &mut Checker) -> String {
         eprintln!("[note] 发布包未声明 engines.node：Node 下限事实以 §15 文档（^22.19 || >=24）为准");
     }
 
-    // dsh-web-app rc.7 起 openBrowser 默认 true：壳靠 --no-open 抑制系统浏览器弹出
+    // dsh-web-app rc.8 起 openBrowser 默认 true：壳靠 --no-open 抑制系统浏览器弹出
     let web_help = Command::new(&node)
         .arg(&bin)
         .arg(upstream::DSH_WEB_SUBCOMMAND)
@@ -359,16 +359,13 @@ async fn probe_ws(dsh: &Dsh, c: &mut Checker) {
 fn probe_presets(rt: &Path, c: &mut Checker) {
     let dir = upstream::join_segments(&upstream::dsh_pkg_dir(rt), upstream::PRESET_DIR_SEGMENTS);
     let state = presets::preset_signature_state(&dir);
-    // NeedsPatch=补丁待打；AlreadyPatched=本机开发期壳已对这份运行时打过补丁，
-    // 同样证明签名判定适用
+    // rc.8 起上游 minimal 预设自带 win32 门控（bash/pwsh 分行按 process.platform
+    // 互斥禁用），我方补丁器已退役——此处断言 UpstreamHandled 作回归哨兵
     c.check(
-        "minimal 预设签名 ∈ {NeedsPatch, AlreadyPatched}",
-        matches!(
-            state,
-            SignatureState::NeedsPatch | SignatureState::AlreadyPatched
-        ),
+        "minimal 预设签名 = UpstreamHandled（rc.8 起上游自修 win32）",
+        matches!(state, SignatureState::UpstreamHandled),
         format!("实际 {state:?}"),
-        "UpstreamHandled=上游已修复→删除 presets.rs 并把断言改为 UpstreamHandled；Missing=预设目录变了→改 PRESET_DIR_SEGMENTS",
+        "NeedsPatch=上游回退了 win32 修复→从 git 历史恢复 presets 补丁器并重评；Missing=预设目录变了→改 PRESET_DIR_SEGMENTS",
     );
 }
 

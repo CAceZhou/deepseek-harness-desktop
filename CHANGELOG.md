@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-08-20
+
+### Changed
+
+- Track dsh 0.1.0-rc.8 (subpackages resolve to rc.8 across the board; npm's `latest` tag lags, so fetch-runtime.ps1 pins `-DshVersion` explicitly). The WebSocket event channels (`/api/events.mux` + `/api/events.host`), the `--no-open` flag, the browse-picker pin rows, all pickerpatch/welcome needles, and the plugin command surface are unchanged — verified item by item by the upstream contract suite against the real runtime
+- The minimal preset (极简模式) patcher is retired: upstream rc.8 fixes the win32 gap itself — the shipped preset now gates `persistent-bash`/`persistent-pwsh` by `process.platform`, and subprocess-local gained a koffi-based Windows terminal inspector. presets.rs keeps only the read-only signature probe; the contract suite asserts `UpstreamHandled` as a regression sentinel, so an upstream revert turns the suite red. Runtime files patched by ≤0.1.21 are still classified correctly via the old marker
+
+Tests: 189 → 184 (183 passed + 1 ignored)
+
 ## [0.1.13] - 2026-08-18
 
 ### Fixed
