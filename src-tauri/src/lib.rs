@@ -119,6 +119,11 @@ pub fn run() {
                 webview.label(),
                 "settings" | "diagnostics" | "skills" | "plugins" | "mcp" | "remote"
             ) {
+                // 新建窗口的 DWM 标题栏属性来自系统主题，与 dsh 解析主题可能相反
+                // （系统浅色+dsh 深色）；首个可见帧前落对，标题栏出生即正确
+                if let Some(w) = webview.app_handle().get_webview_window(webview.label()) {
+                    theme::apply_before_show(webview.app_handle(), &w);
+                }
                 let _ = webview.window().show();
                 let _ = webview.window().set_focus();
                 return;
@@ -129,6 +134,9 @@ pub fn run() {
                 // 主窗口创建时隐藏（tauri.conf visible:false）：window-state 的 restore
                 // 在 window_created 时排队执行，早于首个 Finished，此刻几何已是记忆值——
                 // 直接 show 就不会有"默认尺寸闪一帧再跳变"（探针实测默认尺寸会可见 ~370ms）
+                if let Some(w) = webview.app_handle().get_webview_window("main") {
+                    theme::apply_before_show(webview.app_handle(), &w);
+                }
                 let _ = webview.window().show();
                 let _ = webview.window().set_focus();
                 // 每次整页加载后重注入（SPA 内导航不重载页面，不会重复触发）。

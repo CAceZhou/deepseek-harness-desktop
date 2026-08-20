@@ -165,42 +165,127 @@ fn apply(app: &AppHandle, theme: Theme) {
 ///    缓存的旧状态覆盖可视效果；隐藏窗口上 set_theme 可能报错甚至 panic，须兜住。
 /// 2) 直接对 HWND 设置 DWMWA_USE_IMMERSIVE_DARK_MODE——无缓存、幂等，对隐藏窗口
 ///    同样生效，是标题栏颜色的权威来源。
-/// 另对进程设 PreferredAppMode（uxtheme 未文档化 API，tao 同源做法），
-/// 让托盘右键菜单按解析后的主题绘制，FlushMenuThemes 立即刷新已建菜单。
+/// 注意 DwmSetWindowAttribute 只改属性、不触发非客户区重绘：标题栏会保持旧色直到
+/// 下一次激活（用户点一下才变色）。tao 内部用伪造 WM_NCACTIVATE 触发重绘，但该法
+/// 在部分时序/焦点状态下不生效（winit/Electron 均因此改用 SWP_FRAMECHANGED）。
+/// 所以主题实际变化时必须 SWP_FRAMECHANGED + RedrawWindow 强制重绘非客户区
+/// （Chromium/Windows Terminal 同款）；轮询同值时不重复强制，否则可见窗口的
+/// 标题栏每 2s 闪一次。
 #[cfg(windows)]
 fn apply_windows(app: &AppHandle, theme: Theme) {
+    use std::sync::atomic::Ordering;
+    let dark = matches!(theme, Theme::Dark);
+    let prev = LAST_APPLIED.swap(if dark { 2 } else { 1 }, Ordering::SeqCst);
+    let changed = prev == 0 || (prev == 2) != dark;
+    // 遍历所有窗口而非写死 label——新增本地窗口（如 skills）自动跟随
+    for w in app.webview_windows().values() {
+        apply_window_theme(w, theme, changed);
+    }
+    if changed {
+        set_menu_app_mode(dark);
+        // 现场诊断：主题切换应用留痕，便于排查"属性已改但标题栏没换色"类问题
+        if let Some(p) = app.try_state::<Arc<dyn Platform>>() {
+            crate::append_debug_line(
+                &p.runtime_base_dir().join("events.log"),
+                &format!(
+                    "Theme: applied {} (force NC redraw)",
+                    if dark { "dark" } else { "light" }
+                ),
+            );
+        }
+    }
+}
+
+/// 最近一次已应用的解析主题：0=尚未应用，1=light，2=dark。
+/// 轮询每 2s 跑，只有主题真正变化才对全窗口强制非客户区重绘。
+#[cfg(windows)]
+static LAST_APPLIED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// 对单个窗口落主题：同步 tao 状态 + 写 DWM 属性；force_redraw 时强制非客户区重绘。
+#[cfg(windows)]
+fn apply_window_theme(w: &tauri::WebviewWindow, theme: Theme, force_redraw: bool) {
     use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY: u32 = 19; // Win10 20H1 之前
-    let dark = matches!(theme, Theme::Dark);
-    let value: i32 = dark as i32;
-    // 遍历所有窗口而非写死 label——新增本地窗口（如 skills）自动跟随
-    for w in app.webview_windows().values() {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = w.set_theme(Some(theme));
-        }));
-        if let Ok(hwnd) = w.hwnd() {
-            let hwnd = hwnd.0 as _;
-            unsafe {
-                let hr = DwmSetWindowAttribute(
+    let value: i32 = matches!(theme, Theme::Dark) as i32;
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = w.set_theme(Some(theme));
+    }));
+    if let Ok(hwnd) = w.hwnd() {
+        let hwnd = hwnd.0 as _;
+        unsafe {
+            let hr = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &value as *const i32 as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+            if hr != 0 {
+                DwmSetWindowAttribute(
                     hwnd,
-                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY,
                     &value as *const i32 as *const _,
                     std::mem::size_of::<i32>() as u32,
                 );
-                if hr != 0 {
-                    DwmSetWindowAttribute(
-                        hwnd,
-                        DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY,
-                        &value as *const i32 as *const _,
-                        std::mem::size_of::<i32>() as u32,
-                    );
-                }
+            }
+            if force_redraw {
+                force_nc_redraw(hwnd);
             }
         }
     }
-    set_menu_app_mode(dark);
 }
+
+/// 强制非客户区（标题栏）立即按当前 DWM 属性重绘，无需激活窗口（NOACTIVATE
+/// 不抢焦点）。对隐藏窗口只是打标记，显示时按新属性绘制，无副作用。
+#[cfg(windows)]
+fn force_nc_redraw(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        let _ = RedrawWindow(
+            hwnd,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW,
+        );
+    }
+}
+
+/// 窗口显示前的主题落位：窗口 visible(false) 建窗、on_page_load 才 show。
+/// 新建窗口的 DWM 属性来自系统主题（tao 建窗行为），与 dsh 解析主题可能相反
+/// （系统浅色 + dsh 深色），等 2s 轮询修正会让新窗口带着错误标题栏出生。
+/// 在首个可见帧前把属性写对；窗口若已可见（主窗口整页导航重载）则同时强制重绘。
+#[cfg(windows)]
+pub(crate) fn apply_before_show(app: &AppHandle, w: &tauri::WebviewWindow) {
+    let theme = app
+        .try_state::<ShellUiState>()
+        .map(|s| {
+            if s.get().theme == "dark" {
+                Theme::Dark
+            } else {
+                Theme::Light
+            }
+        })
+        .unwrap_or(Theme::Dark); // 与 tray.rs theme_bootstrap 的缺省一致
+    let visible = w.is_visible().unwrap_or(false);
+    apply_window_theme(w, theme, visible);
+}
+
+#[cfg(not(windows))]
+pub(crate) fn apply_before_show(_app: &AppHandle, _w: &tauri::WebviewWindow) {}
 
 /// 托盘菜单深浅色：PreferredAppMode 2=ForceDark / 3=ForceLight（1903+）。
 /// 不用 AllowDark——它跟随系统而非 dsh 主题。uxtheme 常年驻留进程，无需 FreeLibrary。
@@ -307,5 +392,52 @@ mod tests {
         std::fs::write(home.join("settings.yaml"), "custom: 1\n").unwrap();
         seed_theme_preference(&home, false);
         assert_eq!(std::fs::read_to_string(home.join("settings.yaml")).unwrap(), "custom: 1\n");
+    }
+
+    /// 真实窗口冒烟：DWM 属性写入可读回，force_nc_redraw 不崩溃。
+    /// 重绘的视觉效果（切换后标题栏立即换色、无需点击）由
+    /// scripts/verify-titlebar-theme.ps1 目验——像素级断言无法在单测里做。
+    #[cfg(windows)]
+    #[test]
+    fn force_nc_redraw_on_real_window() {
+        use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DwmSetWindowAttribute};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, WNDCLASSW,
+            WS_OVERLAPPEDWINDOW,
+        };
+        unsafe {
+            let name: Vec<u16> = "dshdesktop-theme-test\0".encode_utf16().collect();
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(DefWindowProcW),
+                lpszClassName: name.as_ptr(),
+                ..std::mem::zeroed()
+            };
+            RegisterClassW(&wc);
+            let hwnd = CreateWindowExW(
+                0,
+                name.as_ptr(),
+                name.as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                320,
+                200,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!hwnd.is_null());
+            let dark: i32 = 1;
+            DwmSetWindowAttribute(hwnd, 20, &dark as *const i32 as *const _, 4);
+            force_nc_redraw(hwnd);
+            let mut got: i32 = 0;
+            assert_eq!(
+                DwmGetWindowAttribute(hwnd, 20, &mut got as *mut i32 as *mut _, 4),
+                0
+            );
+            assert_eq!(got, 1);
+            DestroyWindow(hwnd);
+        }
     }
 }

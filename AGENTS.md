@@ -43,7 +43,12 @@ src-tauri/src/
                     session/title 入 SessionBook 台账；子代理经 host 流 origin 过滤）；
                     sink 在 lib.rs：前台=任一窗口聚焦，按 settings.notify 三类规则门控
   theme.rs          标题栏主题跟随：轮询 dsh-home/settings.yaml 的 ui-theme.preference；
-                    首启播种（settings.yaml 缺失时按系统深浅色预写 preference，dsh 缺省是浅色）
+                    首启播种（settings.yaml 缺失时按系统深浅色预写 preference，dsh 缺省是浅色）；
+                    主题变化时 SWP_FRAMECHANGED+RedrawWindow 强制非客户区重绘——
+                    DwmSetWindowAttribute 只改属性不重绘，tao 的 WM_NCACTIVATE 伪造不可靠，
+                    不强制重绘则标题栏要等用户点击（激活）才换色；轮询同值不重复强制（防闪）；
+                    apply_before_show 在 on_page_load show 前给新建窗口落 DWM 属性
+                    （tao 建窗按系统主题着色，系统浅色+dsh 深色时新窗口标题栏会带错色出生）
   progress.rs       首启进度模型：阶段权重、百分比映射、结构化 dsh-progress 负载
   tray.rs           系统托盘菜单（打开/诊断/插件/技能/MCP 管理/重启/其它设置/退出）；
                     左键单击托盘图标=打开主界面（show_menu_on_left_click(false)，
@@ -181,7 +186,9 @@ scripts/            fetch-runtime.ps1(下载 Node+dsh+cloudflared+精简)、prun
                     verify-window-state.ps1(窗口几何记忆回归：调尺寸→退出→重启→断言恢复)、
                     verify-no-size-flash.ps1(尺寸闪变回归：预写状态文件→断言首个可见帧即记忆几何)、
                     verify-completion-notify.ps1(完成通知回归：fixture 运行时+隐藏窗口→断言
-                    events.log 出现 Notify: TurnCompleted)、use-fixture-runtime.ps1、gen-icon.mjs
+                    events.log 出现 Notify: TurnCompleted)、use-fixture-runtime.ps1、
+                    verify-titlebar-theme.ps1(标题栏主题即时重绘回归：写 settings.yaml 切主题→
+                    不点击窗口断言标题栏像素即时换色，需先 pnpm dev)、gen-icon.mjs
 docs/design.zh-CN.md / design.md                  设计文档（架构/模块/打包/测试/已知限制，先读它）
 ```
 

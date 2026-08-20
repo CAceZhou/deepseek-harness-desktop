@@ -168,6 +168,7 @@ dsh WS /api/events.host ─▶ WsSource(host) ─▶ handle_host_frame ─▶ Se
 - **Windows 双管齐下**：
   1. `window.set_theme()` 同步 tao 内部主题状态——不同步的话，tao 可能在窗口事件后用缓存的旧状态覆盖可视效果。隐藏窗口上调用可能报错甚至 panic，必须 `catch_unwind` 兜住；
   2. 直接对 HWND 调 `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE=20)`——无缓存、幂等、对隐藏窗口同样生效，是标题栏颜色的权威来源。attr 20 失败（E_INVALIDARG）时回退旧值 19（Win10 20H1 之前）。
+- **非客户区必须强制重绘（已修复，勿回退）**：`DwmSetWindowAttribute` 只改属性、不重绘标题栏——窗口会保持旧色直到下一次激活（用户"点一下才变色"）；tao `set_theme` 内部伪造 `WM_NCACTIVATE` 触发重绘，但该法在部分时序/焦点状态下不生效（winit/Electron 均因此弃用）。主题实际变化时（`LAST_APPLIED` 原子门控，轮询同值不重复强制，防每 2s 闪一次）对每个窗口 `SetWindowPos(SWP_FRAMECHANGED|SWP_NOACTIVATE|NOMOVE|NOSIZE|NOZORDER)` + `RedrawWindow(RDW_FRAME|RDW_INVALIDATE|RDW_UPDATENOW)` 强制非客户区重绘（Chromium/Windows Terminal 同款），并在 events.log 留痕。另外新建窗口的 DWM 属性来自系统主题（tao 建窗行为），"系统浅色 + dsh 深色"组合下会带错色出生；`on_page_load` 在 show 前经 `apply_before_show` 把属性落对（已可见的主窗口整页导航则同时强制重绘）。回归：`scripts/verify-titlebar-theme.ps1`（不点击窗口断言标题栏像素即时换色）。
 - **语言**：`theme.rs` 的轮询把解析后的 locale 写入 `i18n.rs` 全局原子（`i18n::pick(zh, en)` 取当前语言，托盘菜单/窗口标题/进度/通知/命令错误文案全部经它取）；locale 变化时重建托盘菜单（`tray::apply_locale`，Windows 托盘菜单不能改文案只能重建）并刷新本地窗口标题；前端 `i18n.ts` 以中文原文为 key 的 en 字典 + 响应式 `t()`（未命中 fallback 中文，避免裸 key）。`ShellUiState` 启动时立即写入全局语言、关注循环首轮 force 同步——否则 locale=en 时托盘菜单要等设置变化才重建。
 - **已知限制**：Win10 上深色标题栏**聚焦时纯黑、失焦时深灰**是系统行为；`DWMWA_CAPTION_COLOR`(35)/`DWMWA_TEXT_COLOR`(36) 仅 Win11 可用。要做到恒为 dsh 的深灰（#1B1B1C），需要无边框窗口 + `initialization_script` 注入自绘标题栏——暂缓。
 
