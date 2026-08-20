@@ -113,6 +113,57 @@ pub const PICKER_BROWSE_HOST_PKG: &str = "@deepseek-ai/dsh-host-directory-picker
 pub const PICKER_BROWSE_SURFACE_ROW_ID: &str = "ui-directory-picker-browse";
 pub const PICKER_BROWSE_SURFACE_PKG: &str = "@deepseek-ai/dsh-client-ui-directory-picker-browse";
 
+// ── browse 选择器运行时补丁（pickerpatch.rs；MARKER 与补丁内容是我方产物）──
+// browse 对话框是 picker.rs 钉入的官方 overlay 形态，但两件事实让它在
+// Windows/远程场景不够用：(1) host 侧 list() 只认"全限定路径"，没有任何
+// 盘符枚举入口——面包屑在 home 子树内被 displayCrumbs 折叠成单个"主页"，
+// 爬到其它盘只能手输路径（移动端正面的痛点）；(2) 客户端 showHidden
+// 默认 false 且每次打开对话框重置，页脚"显示隐藏文件"开关在手机一行
+// 布局里挤占"新建文件夹"。补丁 = 原地改写两个包内文件（dsh 自更新还原后
+// 下次启动重打）：host 增加 "dsh:drives" 哨兵层级（list 特判返回 A-Z 可用
+// 盘符根；ancestryCrumbs 对盘符根路径前插"此电脑"面包屑），客户端默认
+// 显示隐藏条目 + 面包屑保留并本地化哨兵 crumb + 哨兵层级禁用"打开/新建
+// 文件夹"（避免把哨兵当工作区选中）。
+/// host 端 browse 后端与客户端对话框的包内文件路径（相对 dsh 运行时
+/// node_modules 目录——与 WELCOME_NOTICE_CLIENT_SEGMENTS 同一基准，npm
+/// 把子包平铺在 @deepseek-ai/ 下，dsh 包根内不嵌套）。
+pub const PICKER_HOST_BROWSE_FILE_SEGMENTS: &[&str] = &[
+    "@deepseek-ai",
+    "dsh-host-directory-picker-browse",
+    "lib",
+    "index.js",
+];
+pub const PICKER_CLIENT_BROWSE_FILE_SEGMENTS: &[&str] = &[
+    "@deepseek-ai",
+    "dsh-client-ui-directory-picker-browse",
+    "lib",
+    "client.js",
+];
+/// 盘符枚举哨兵路径：host list() 的特判入参，客户端面包屑点击/打开禁用判定共用。
+pub const PICKER_DRIVES_SENTINEL: &str = "dsh:drives";
+/// 补丁锚定 needle（上游出处：两文件的 rc 原文；任一缺失 = 上游形态变了，整组停手）。
+/// host：list() 全限定校验行（哨兵分支插在它与 homedir 之间）。
+pub const PICKER_HOST_LIST_NEEDLE: &str =
+    "if (path !== void 0 && !fullyQualified(path)) throw new DirectoryPickerError";
+/// host：ancestryCrumbs 到根即返回行（盘符根前插"此电脑" crumb 的锚点）。
+pub const PICKER_HOST_CRUMBS_NEEDLE: &str = "if (parent === current) return crumbs;";
+/// client：showHidden 初值与开框重置（默认显示隐藏 = 两处都改 true）。
+pub const PICKER_CLIENT_HIDDEN_INIT_NEEDLE: &str =
+    "const [showHidden, setShowHidden] = (0, react.useState)(false);";
+pub const PICKER_CLIENT_HIDDEN_RESET_NEEDLE: &str = "setShowHidden(false);";
+/// client：displayCrumbs 的 home 折叠（哨兵 crumb 须在折叠后仍居首）。
+pub const PICKER_CLIENT_CRUMBS_NEEDLE: &str = "if (homeIndex === -1) return listing.crumbs;";
+/// client：面包屑渲染（哨兵 crumb 走本地化文案而非 host 写死的名字）。
+pub const PICKER_CLIENT_CRUMB_LABEL_NEEDLE: &str = "children: crumb.name";
+/// client：页脚两个按钮的禁用表达式（哨兵层级禁"打开/新建文件夹"）。
+pub const PICKER_CLIENT_OPEN_DISABLED_NEEDLE: &str =
+    "disabled: targetPath === null || loading || parentInert || draftPending,";
+pub const PICKER_CLIENT_NEWFOLDER_DISABLED_NEEDLE: &str =
+    "disabled: parent === null || loading || parentInert || draftPending,";
+/// client：locale 字典行（注册 browser.drives 文案）。
+pub const PICKER_CLIENT_LOCALE_ZH_NEEDLE: &str = r#""browser.showHidden": "显示隐藏文件""#;
+pub const PICKER_CLIENT_LOCALE_EN_NEEDLE: &str = r#""browser.showHidden": "Show hidden files""#;
+
 // ── 预设补丁签名（presets.rs；MARKER 与补丁内容是我方产物，不在此列）──
 /// minimal 预设目录的包内相对路径。
 pub const PRESET_DIR_SEGMENTS: &[&str] = &["config", "agent-presets", "minimal"];

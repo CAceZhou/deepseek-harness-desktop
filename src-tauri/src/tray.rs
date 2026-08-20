@@ -284,6 +284,30 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// 主题一致的建窗引导：窗口 visible(false) 延迟到 on_page_load 才显示，但 WebView2
+/// 预绘制白底 + app.css 首帧按系统色兜底，在"系统浅色 + dsh 深色"组合下页面
+/// JS 置 data-theme 之前会整页白几秒。创建时按壳当前解析主题双管齐下：
+/// background_color 管 WebView2 的白底，初始化脚本在首帧前写死 data-theme
+/// 与 color-scheme，压住 CSS 的浅色变量分支。
+fn theme_bootstrap(app: &AppHandle) -> (String, tauri::window::Color) {
+    let dark = app
+        .try_state::<crate::theme::ShellUiState>()
+        .map(|s| s.get().theme == "dark")
+        .unwrap_or(true);
+    let name = if dark { "dark" } else { "light" };
+    let script = format!(
+        "document.documentElement.dataset.theme='{name}';\
+         document.documentElement.style.colorScheme='{name}';"
+    );
+    // 与 src/app.css 两个主题的 --bg 一致
+    let color = if dark {
+        tauri::window::Color(15, 17, 21, 255)
+    } else {
+        tauri::window::Color(245, 246, 248, 255)
+    };
+    (script, color)
+}
+
 fn open_diagnostics(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("diagnostics") {
         let _ = w.show();
@@ -291,12 +315,15 @@ fn open_diagnostics(app: &AppHandle) {
         return;
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let (script, color) = theme_bootstrap(app);
     let _ = WebviewWindowBuilder::new(app, "diagnostics", WebviewUrl::App("index.html#/diagnostics".into()))
         .title(window_title("DSHDesktop 诊断面板", "DSHDesktop Diagnostics"))
         .inner_size(900.0, 640.0)
         // 无 window-state 记录时创建即居中；有记录时插件 restore 在创建后、可见前覆盖
         .center()
         .visible(false)
+        .initialization_script(&script)
+        .background_color(color)
         .build();
 }
 
@@ -307,11 +334,14 @@ fn open_settings(app: &AppHandle) {
         return;
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let (script, color) = theme_bootstrap(app);
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html#/settings".into()))
         .title(window_title("DSHDesktop 设置", "DSHDesktop Settings"))
         .inner_size(760.0, 700.0)
         .center()
         .visible(false)
+        .initialization_script(&script)
+        .background_color(color)
         .build();
 }
 
@@ -322,11 +352,14 @@ fn open_plugins(app: &AppHandle) {
         return;
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let (script, color) = theme_bootstrap(app);
     let _ = WebviewWindowBuilder::new(app, "plugins", WebviewUrl::App("index.html#/plugins".into()))
         .title(window_title("DSHDesktop 插件管理", "DSHDesktop Plugins"))
         .inner_size(900.0, 680.0)
         .center()
         .visible(false)
+        .initialization_script(&script)
+        .background_color(color)
         .build();
 }
 
@@ -337,11 +370,14 @@ fn open_skills(app: &AppHandle) {
         return;
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let (script, color) = theme_bootstrap(app);
     let _ = WebviewWindowBuilder::new(app, "skills", WebviewUrl::App("index.html#/skills".into()))
         .title(window_title("DSHDesktop 技能管理", "DSHDesktop Skills"))
         .inner_size(860.0, 640.0)
         .center()
         .visible(false)
+        .initialization_script(&script)
+        .background_color(color)
         .build();
 }
 
@@ -352,11 +388,14 @@ fn open_mcp(app: &AppHandle) {
         return;
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let (script, color) = theme_bootstrap(app);
     let _ = WebviewWindowBuilder::new(app, "mcp", WebviewUrl::App("index.html#/mcp".into()))
         .title(window_title("DSHDesktop MCP 管理", "DSHDesktop MCP Manager"))
         .inner_size(900.0, 680.0)
         .center()
         .visible(false)
+        .initialization_script(&script)
+        .background_color(color)
         .build();
 }
 
@@ -367,11 +406,14 @@ fn open_remote(app: &AppHandle) {
         return;
     }
     // 创建时隐藏：页面加载完成（lib.rs on_page_load）再显示，防白闪
+    let (script, color) = theme_bootstrap(app);
     let _ = WebviewWindowBuilder::new(app, "remote", WebviewUrl::App("index.html#/remote".into()))
         .title(window_title("DSHDesktop 远程访问", "DSHDesktop Remote Access"))
         .inner_size(460.0, 600.0)
         .center()
         .visible(false)
+        .initialization_script(&script)
+        .background_color(color)
         .build();
 }
 

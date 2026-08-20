@@ -131,11 +131,12 @@
   }
 
   /*
-   * 同上对话框的 footer 四控件（新建文件夹 / 显示隐藏文件 / 取消 / 打开）：
-   * 原生 flex-wrap:wrap 在手机上把"打开"挤到第二行，且弹性占位把行撑得
-   * 参差不齐。改一行均分：nowrap、去掉 footerGap、四项 flex 等分、按钮
-   * min-width 归零并收紧内边距（原生 72px 最小宽 + 24px 侧距在 390px
-   * 视口必然换行）；显示隐藏开关字号同步收紧居中。
+   * 同上对话框的 footer：原生四控件（新建文件夹 / 显示隐藏文件 / 取消 / 打开）
+   * flex-wrap:wrap 在手机上把"打开"挤到第二行，且弹性占位把行撑得参差不齐。
+   * pickerpatch.rs 已把隐藏条目改为默认显示（手机端没有频繁切换的需求），
+   * 开关整个移除，剩三控件一行均分：nowrap、去掉 footerGap、三项 flex 等分、
+   * 按钮 min-width 归零并收紧内边距（原生 72px 最小宽 + 24px 侧距在 390px
+   * 视口必然换行）。
    */
   [role="dialog"]:has([class*="_millerRow"]) [class*="_footerBar"] {
     flex-wrap: nowrap;
@@ -145,15 +146,14 @@
   [role="dialog"]:has([class*="_millerRow"]) [class*="_footerGap"] {
     display: none;
   }
+  [role="dialog"]:has([class*="_millerRow"]) [class*="_showHiddenToggle"] {
+    display: none;
+  }
   [role="dialog"]:has([class*="_millerRow"]) [class*="_footerBar"] > * {
     flex: 1 1 0;
     min-width: 0;
     padding-left: 4px;
     padding-right: 4px;
-  }
-  [role="dialog"]:has([class*="_millerRow"]) [class*="_footerBar"] > [class*="_showHiddenToggle"] {
-    justify-content: center;
-    font-size: 12px;
   }
 
   /*

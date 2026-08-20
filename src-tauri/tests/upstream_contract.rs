@@ -496,6 +496,40 @@ fn probe_picker(rt: &Path, c: &mut Checker) {
     }
 }
 
+/// pickerpatch.rs 的原地补丁签名（两包内文件的 needle 全量核对；上游改版即红）
+fn probe_pickerpatch(rt: &Path, c: &mut Checker) {
+    let nm = upstream::dsh_node_modules_dir(rt);
+    let host = upstream::join_segments(&nm, upstream::PICKER_HOST_BROWSE_FILE_SEGMENTS);
+    let client = upstream::join_segments(&nm, upstream::PICKER_CLIENT_BROWSE_FILE_SEGMENTS);
+    let host_text = fs::read_to_string(&host).unwrap_or_default();
+    let client_text = fs::read_to_string(&client).unwrap_or_default();
+    c.check(
+        "browse host index.js 存在且含哨兵补丁锚点",
+        host_text.contains(upstream::PICKER_HOST_LIST_NEEDLE)
+            && host_text.contains(upstream::PICKER_HOST_CRUMBS_NEEDLE),
+        format!("path={}", host.display()),
+        "host browse 形态变了：改 upstream::PICKER_HOST_*_NEEDLE 与 pickerpatch.rs 的 HOST_* 替换串",
+    );
+    let client_ok = [
+        upstream::PICKER_CLIENT_HIDDEN_INIT_NEEDLE,
+        upstream::PICKER_CLIENT_HIDDEN_RESET_NEEDLE,
+        upstream::PICKER_CLIENT_CRUMBS_NEEDLE,
+        upstream::PICKER_CLIENT_CRUMB_LABEL_NEEDLE,
+        upstream::PICKER_CLIENT_OPEN_DISABLED_NEEDLE,
+        upstream::PICKER_CLIENT_NEWFOLDER_DISABLED_NEEDLE,
+        upstream::PICKER_CLIENT_LOCALE_ZH_NEEDLE,
+        upstream::PICKER_CLIENT_LOCALE_EN_NEEDLE,
+    ]
+    .iter()
+    .all(|n| client_text.contains(n));
+    c.check(
+        "browse client.js 存在且含全部补丁锚点（8 处）",
+        !client_text.is_empty() && client_ok,
+        format!("path={}", client.display()),
+        "client browse 形态变了：改 upstream::PICKER_CLIENT_*_NEEDLE 与 pickerpatch.rs 的 CLIENT_* 替换串",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn upstream_contract() {
     let Some(rt) = runtime_dir() else {
@@ -506,6 +540,7 @@ async fn upstream_contract() {
     let version = probe_entry(&rt, &mut c);
     probe_plugins_cli(&rt, &mut c);
     probe_picker(&rt, &mut c);
+    probe_pickerpatch(&rt, &mut c);
     probe_presets(&rt, &mut c);
     probe_remote_needles(&rt, &mut c);
     match spawn_dsh(&rt).await {

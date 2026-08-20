@@ -15,6 +15,7 @@ pub mod platform;
 pub mod plugins;
 pub mod port;
 pub mod picker;
+pub mod pickerpatch;
 pub mod presets;
 pub mod process;
 pub mod progress;
@@ -393,6 +394,16 @@ pub fn run() {
                     append_debug_line(&debug_log, "picker: pinned browse interaction")
                 }
                 Err(e) => append_debug_line(&debug_log, &format!("picker: pin failed: {e}")),
+            }
+            // browse 选择器运行时补丁：盘符哨兵层级 + 隐藏条目默认显示
+            // （细节见 pickerpatch.rs 头注）。客户端/ host 签名门控、整组停手；
+            // 必须在 spawn_supervised 之前完成，失败只记 events.log。
+            let browse_outcome = pickerpatch::patch_browse_picker(&paths);
+            if browse_outcome != pickerpatch::BrowsePatchOutcome::AlreadyPatched {
+                append_debug_line(
+                    &debug_log,
+                    &format!("pickerpatch: browse drives/hidden -> {browse_outcome:?}"),
+                );
             }
             // block_on 提供 tokio runtime 上下文，spawn_supervised 内部的 tokio::spawn 依赖它
             let proc = tauri::async_runtime::block_on(async {

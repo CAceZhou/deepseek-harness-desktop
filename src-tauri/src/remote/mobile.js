@@ -1,6 +1,9 @@
 /*
- * DSHDesktop 远程访问移动端增强：会话页"对话/轨迹"旁追加"信息"标签，
- * 点开展示回合统计面板（轮步/LLM 耗时/首 token/缓存/token 用量）。
+ * DSHDesktop 远程访问移动端增强：
+ * 1) 会话页"对话/轨迹"旁追加"信息"标签，点开展示回合统计面板
+ *    （轮步/LLM 耗时/首 token/缓存/token 用量）。
+ * 2) 输入卡片工具行（"+" 旁）注入回形针附件按钮，手机端从系统文件
+ *    选择器传图片进草稿（上游只有拖拽/剪贴板两条入口，手机都没有）。
  *
  * 设计要点：
  * - 渐进增强：任何一步找不到目标节点就静默放弃——mobile.css 里统计行的
@@ -152,3 +155,124 @@
     /* 静默：增强失败不影响页面 */
   }
 })()
+
+/*
+ * 附件按钮：上游输入只有拖拽/剪贴板两条图片入口（onPaste → intakeImages
+ * → createDraftImages → base64 → session.prompt），手机浏览器一条都没有。
+ * 这里在输入卡片工具行（"+" 旁）注入一个样式克隆自 "+" 的回形针按钮，
+ * 点击调起系统文件选择器，选完构造 DataTransfer 合成 paste 事件喂回上游
+ * 自己的粘贴管线——类型/数量/体积校验与报错 toast 全部复用上游逻辑。
+ *
+ * 注意：上游 host（dsh-attachment admitEncodedImages，sharp 校验）只认
+ * png/jpeg/webp/gif 四种位图，文档类型上游不支持，选择器因此只开图片。
+ * 按钮与 file input 都是我们加的异物节点，input 放 body 下（React 树外），
+ * 按钮插入 tools 行（与信息标签同款先例：只加不移 React 节点）；
+ * React 重渲染抹掉按钮时由观察器按 DOM 缺席重挂。
+ */
+;(() => {
+  try {
+    const BTN_ATTR = 'data-dshmobile-attach'
+    const narrow = () => matchMedia('(max-width: 700px)').matches
+    const zh = () => (document.documentElement.lang || '').toLowerCase().startsWith('zh')
+    // Feather 风格回形针（24 视窗描边图标，与 dsh 的 outline 图标同风）
+    const PAPERCLIP_SVG =
+      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>'
+
+    // 共享一个 file input（body 下、React 树外）；点击时记录目标卡片。
+    // 惰性创建：本脚本注入点在 </head> 前，执行时 body 可能还没出来。
+    let picker = null
+    let targetCard = null
+    const ensurePicker = () => {
+      if (picker) return picker
+      if (!document.body) return null
+      picker = document.createElement('input')
+      picker.type = 'file'
+      picker.accept = 'image/png,image/jpeg,image/webp,image/gif'
+      picker.multiple = true
+      picker.style.display = 'none'
+      picker.addEventListener('change', () => {
+        const files = Array.from(picker.files || [])
+        picker.value = ''
+        const card = targetCard
+        targetCard = null
+        if (files.length === 0 || !card || !card.isConnected) return
+        const textarea = card.querySelector('textarea')
+        if (!textarea) return
+        try {
+          const dt = new DataTransfer()
+          for (const f of files) dt.items.add(f)
+          textarea.dispatchEvent(
+            new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+          )
+        } catch {
+          /* 静默 */
+        }
+      })
+      document.body.appendChild(picker)
+      return picker
+    }
+
+    const setup = (tools) => {
+      const addBtn = tools.querySelector('button[class*="_add"]')
+      const card = tools.closest('[class*="_card"]')
+      if (!addBtn || !card || !card.querySelector('textarea')) return
+      // "+" 可能包在 Tooltip 的 wrapper 里：锚定它在 tools 行的直接子代
+      let anchor = addBtn
+      while (anchor.parentElement && anchor.parentElement !== tools) anchor = anchor.parentElement
+
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = addBtn.className // 克隆 "+" 的类名，28px 圆形同款
+      btn.disabled = addBtn.disabled
+      btn.setAttribute(BTN_ATTR, '')
+      btn.setAttribute('aria-label', zh() ? '添加图片附件' : 'Add image attachment')
+      btn.innerHTML = PAPERCLIP_SVG
+      anchor.after(btn)
+
+      // 与上游 keepFocus 一致：按下不抢输入框焦点
+      btn.addEventListener('mousedown', (e) => e.preventDefault())
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return
+        const p = ensurePicker()
+        if (!p) return
+        targetCard = card
+        p.value = ''
+        p.click()
+      })
+    }
+
+    const ensure = () => {
+      // 离开窄断点（旋屏/拉窗）时摘除按钮，桌面形态保持原生
+      if (!narrow()) {
+        for (const b of document.querySelectorAll(`button[${BTN_ATTR}]`)) b.remove()
+        return
+      }
+      for (const tools of document.querySelectorAll('div[class*="_tools"]')) {
+        try {
+          const existing = tools.querySelector(`button[${BTN_ATTR}]`)
+          if (existing) {
+            // 跟随 "+" 的禁用态（锁定/忙时上游 onPaste 也会拒收，双保险）
+            const addBtn = tools.querySelector('button[class*="_add"]')
+            if (addBtn) existing.disabled = addBtn.disabled
+            continue
+          }
+          setup(tools)
+        } catch {
+          /* 静默 */
+        }
+      }
+    }
+
+    new MutationObserver(() => {
+      try {
+        ensure()
+      } catch {
+        /* 静默 */
+      }
+    }).observe(document.documentElement, { subtree: true, childList: true })
+    ensure()
+  } catch {
+    /* 静默：增强失败不影响页面 */
+  }
+})()
+

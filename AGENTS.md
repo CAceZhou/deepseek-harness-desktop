@@ -49,7 +49,12 @@ src-tauri/src/
                     左键单击托盘图标=打开主界面（show_menu_on_left_click(false)，
                     on_tray_icon_event Left/Up → show_main；窗口隐藏未销毁，位置不变），
                     菜单走右键；按需窗口 builder .center()（首启居中，记忆几何由 window-state 覆盖）；
-                    diagnostics.rs 状态/日志环形缓冲；commands.rs 8 个 invoke 命令
+                    六个按需窗口带 theme_bootstrap（background_color 按壳解析主题铺底
+                    深#0f1115/浅#f5f6f8 + initialization_script 首帧前写死
+                    data-theme/color-scheme——否则"系统浅色+dsh 深色"组合下
+                    WebView2 白底与 app.css 浅色兜底分支会让页面先白几秒，
+                    插件管理页实踩）；diagnostics.rs 状态/日志环形缓冲；
+                    commands.rs 8 个 invoke 命令
   zoom.rs           UI 缩放：钩子脚本 hook_js(settings) 动态内嵌快捷键(on_page_load eval，
                     只注入 main 窗口)、direction 命令按设置读步进、ui-zoom.txt 持久化
   settings.rs       壳设置：settings.json 模型（步进 1-25%/快捷键/关窗行为/
@@ -97,6 +102,17 @@ src-tauri/src/
                     与 mcp.rs 同文件 Value 级共存（条目互不命中），spawn 前
                     完成，失败只记 events.log；桌面端同步变网页版对话框
                     （功能不减：浏览全盘/新建文件夹/手输路径）
+  pickerpatch.rs    browse 选择器运行时补丁（presets.rs 同款签名门控+marker
+                    幂等原地改写，dsh 自更新还原后下次启动重打）：
+                    host index.js 加 "dsh:drives" 哨兵层级（list 特判返回
+                    A-Z 可用盘符根，ancestryCrumbs 对盘符根前插"此电脑"
+                    crumb——否则面包屑在 home 子树内被折叠成"主页"，手机端
+                    爬不到其它盘）；client.js 隐藏条目默认显示（含开框重置）、
+                    displayCrumbs 折叠时保留哨兵 crumb 居首、哨兵 crumb 走
+                    locale 文案（browser.drives 此电脑/This PC）、哨兵层级
+                    禁用"打开/新建文件夹"（防把哨兵选成工作区）；客户端是
+                    安全前提，其签名漂移/缺失时整组停手（只改 host 会放出
+                    半成品）；needle 与文件路径收口 upstream.rs，契约套件守门
   welcome.rs        内测声明豁免播种：dsh 的 welcome notice（"内测声明"对话框）
                     在 settings.yaml 的 ui-onboarding.welcomeNoticeVersion ≠ 当前
                     文案版本时每次启动弹窗；启动时从运行时 client.js 提取文案版本
@@ -124,11 +140,19 @@ src-tauri/src/
                     HTML 文档注入移动端适配（accept 含 text/html 且 identity ≤4MB）：
                     mobile.css 700px 断点，设置弹窗全屏+横向 tab、侧栏抽屉化、
                     模型选择器图标化、触发器菜单包含块修复（position:static 上移到
-                    输入卡片）、目录浏览对话框近全屏且 footer 四控件一行均分
-                    （原 wrap 把"打开"挤到第二行）；mobile.js 在"对话/轨迹"旁加"信息"标签页——统计行
+                    输入卡片）、目录浏览对话框近全屏且 footer 三控件一行均分
+                    （"显示隐藏文件"开关随 pickerpatch 默认显示而移除）；
+                    mobile.js 在"对话/轨迹"旁加"信息"标签页——统计行
                     克隆进面板（MutationObserver 同步，克隆而非搬家：React 对被移
                     节点 removeChild 必崩），enhanced 标记隐藏原行且跟随
                     matchMedia 断点（离开 700px 摘除，防宽屏统计无处可见）；
+                    另在输入卡片工具行"+"旁注入回形针附件按钮（类名克隆同款
+                    28px 圆形）：点击调起系统文件选择器（仅 png/jpeg/webp/gif——
+                    上游 host sharp 校验只认四种位图，文档不支持），选完构造
+                    DataTransfer 合成 paste 事件喂回上游粘贴管线（intakeImages
+                    校验/报错 toast 全复用）；file input 惰性创建放 body
+                    （注入点在 </head> 前，执行时 body 可能未出来，且须在
+                    React 树外），按钮被重渲染抹掉时观察器按 DOM 缺席重挂；
                     JS 失效时 CSS 两行换行兜底。选择器锚 role/data-* 语义钩子
                     +CSS Modules 本地名子串（[class*="_nav"]），上游改名静默失效；
                     /plugins/*/client.js 响应缓冲改写（≤4MB 仅 identity，剥
@@ -165,7 +189,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（184 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
+cd src-tauri && cargo test            # 全部测试（189 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -216,7 +240,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 184 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 189 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 
