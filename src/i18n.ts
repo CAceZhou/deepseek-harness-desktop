@@ -163,7 +163,7 @@ const en: Record<string, string> = {
   '尚无插件，搜索并安装一个。': 'No plugins yet — search and install one.',
   '操作输出': 'Operation output',
   '成功': 'ok',
-  '失败，退出码': ' failed (exit code {code})',
+  '失败，退出码 {code}': ' failed (exit code {code})',
   '看下方输出': 'see output below',
   '退出码': 'exit code',
   '完成，重启 dsh 后生效': '{label} done — restart dsh to activate',

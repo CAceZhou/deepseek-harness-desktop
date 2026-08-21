@@ -60,7 +60,7 @@
       if (r.exitCode === 0) {
         notice = { kind: 'ok', text: t('完成，重启 dsh 后生效', { label }) }
       } else {
-        notice = { kind: 'err', text: `${label}${t('失败，退出码', { code: r.exitCode })}，${t('看下方输出')}` }
+        notice = { kind: 'err', text: `${label}${t('失败，退出码 {code}', { code: r.exitCode })}，${t('看下方输出')}` }
       }
       await load()
       await runSearch()

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginRow {
     pub name: String,
     pub version: String,
@@ -15,6 +16,7 @@ pub struct PluginRow {
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginStatus {
     pub pnpm_ready: bool,
     pub pnpm_version: Option<String>,
@@ -119,6 +121,7 @@ pub fn get_plugin_status_impl(home: &PluginsHome) -> Result<PluginStatus, String
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginOpResult {
     pub exit_code: i32,
     pub output: String, // stdout+stderr 合并，截断
@@ -167,6 +170,10 @@ pub fn run_plugin_op(home: &PluginsHome, args: &[&str]) -> Result<PluginOpResult
         .args(args)
         .env("DSH_HOME", &home.home)
         .env("PATH", &full_path);
+    // wait_with_output 只读 pipe 出来的句柄；tokio spawn 默认继承父进程
+    // stdio，不显式 pipe 则 output 恒为空（“看下方输出”永远没内容）。
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     crate::platform::current().configure_child_command(&mut cmd);
     let child = cmd
         .spawn()
@@ -442,6 +449,51 @@ mod tests {
         assert!(!r[0].installed && r[0].description == "MCP for dsh");
         assert!(r[1].installed);
         assert_eq!(r[1].description, "");
+    }
+
+    #[test]
+    fn run_captures_child_output() {
+        // “看下方输出”依赖捕获子进程 stdout/stderr；tokio spawn 默认继承
+        // 父进程 stdio，不显式 pipe 则 output 恒为空。
+        let (home, work) = test_home("capture");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(
+            &home.dsh_bin,
+            r#"console.log("out-marker"); console.error("err-marker"); process.exit(3);"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.pnpm_dir.join("pnpm").join("bin")).unwrap();
+        std::fs::write(home.pnpm_dir.join("pnpm").join("bin").join("pnpm.cjs"), "").unwrap();
+        std::fs::write(home.pnpm_dir.join("pnpm.cmd"), "").unwrap();
+        let r = run_plugin_op(&home, &["add", "x"]).unwrap();
+        assert_eq!(r.exit_code, 3);
+        assert!(r.output.contains("out-marker"), "stdout 未被捕获：{:?}", r.output);
+        assert!(r.output.contains("err-marker"), "stderr 未被捕获：{:?}", r.output);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn ipc_payloads_serialize_camel_case() {
+        // 前端（Plugins.svelte）按 camelCase 读键；snake_case 会让 exitCode 恒为
+        // undefined——成功被误判为失败、pnpm 状态恒显示"缺失"。
+        let v = serde_json::to_value(PluginOpResult { exit_code: 0, output: "x".into() }).unwrap();
+        assert!(v.get("exitCode").is_some(), "前端读 exitCode，实际键：{v}");
+        let v = serde_json::to_value(PluginStatus {
+            pnpm_ready: true,
+            pnpm_version: Some("9.15.0".into()),
+            profile_ready: true,
+        })
+        .unwrap();
+        assert!(v.get("pnpmReady").is_some(), "前端读 pnpmReady，实际键：{v}");
+        assert!(v.get("pnpmVersion").is_some());
+        assert!(v.get("profileReady").is_some());
+        let v = serde_json::to_value(PluginRow {
+            name: "a".into(),
+            version: "1".into(),
+            is_bundle: true,
+        })
+        .unwrap();
+        assert!(v.get("isBundle").is_some(), "前端读 isBundle，实际键：{v}");
     }
 
     #[test]

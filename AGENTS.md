@@ -95,8 +95,13 @@ src-tauri/src/
                     pnpm.cmd 包装——Windows PATHEXT 只认 .cmd，dsh 内部
                     spawnSync("pnpm") 带 shell:true 经 cmd 解析）；spawn 时
                     PATH 前置 runtime 目录；无 shell + CREATE_NO_WINDOW +
-                    register_child 挂 Job Object；清单读 profiles/web/
-                    package.json（dependencies + dsh.profile.bundles，BOM
+                    register_child 挂 Job Object；stdout/stderr 必须显式
+                    pipe（tokio spawn 默认继承父进程 stdio，wait_with_output
+                    只读管道句柄，不接则 output 恒空、"看下方输出"永远没
+                    内容）；IPC 返回结构体全部 serde camelCase 重命名
+                    （前端按 camelCase 读键，漏 rename_all 则 exitCode 恒
+                    undefined、成功被误报失败；锚定测试守门）；清单读
+                    profiles/web/package.json（dependencies + dsh.profile.bundles，BOM
                     容忍）；npm 搜索走 registry API（外网走系统代理）；
                     串行锁防并发写 profile；装完需重启 dsh 生效（无 HMR，
                     面板一键重启复用 restart_dsh）；6 命令 + PluginsHome 状态

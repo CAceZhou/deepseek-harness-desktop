@@ -387,7 +387,9 @@ dsh 的"插件"= 声明了 `dsh.bundle` 的 npm 包（cordis bundle，装进 pro
 - `get_plugin_status`：pnpm 就绪态（`pnpm.cmd` + `pnpm\bin\pnpm.cjs` 都存在）+ `node pnpm.cjs --version` 实测版本 + profile 是否已初始化（`profiles/web/package.json` 存在）
 - `list_plugins`：读清单 `dependencies`（版本）与 `dsh.profile.bundles`（标"插件"徽章，其余标"依赖"）；文件缺失 → 空列表；BOM 容忍；解析失败显式报错
 - `search_plugins(q)`：npm registry search API（`registry.npmjs.org/-/v1/search`，reqwest 带 UA；外网走系统代理——与回环的 no_proxy 相反，同 update.rs 约定）；结果与已装列表交叉标"已安装"；查询 <2 字符直接返回空
-- `install_plugin(spec)` / `uninstall_plugin(name)` / `update_plugins()`：`run_plugin_op` 统一执行——`node bin.js plugin --profile web <args>`，DSH_HOME 注入、PATH 前置、无 shell（参数直接走 argv，杜绝注入）、`configure_child_command`（CREATE_NO_WINDOW 防闪控制台）、spawn 后 `register_child` 挂全局 Job Object（壳被杀连带回收，防孤儿）；输出 stdout+stderr 合并截断 200KB 返回。`validate_spec` 拦截空/超长/`-` 开头（防参数注入）。`busy` Mutex 串行锁：同一时刻只允许一个操作（try_lock 失败报"进行中"），防并发写 profile。
+- `install_plugin(spec)` / `uninstall_plugin(name)` / `update_plugins()`：`run_plugin_op` 统一执行——`node bin.js plugin --profile web <args>`，DSH_HOME 注入、PATH 前置、无 shell（参数直接走 argv，杜绝注入）、`configure_child_command`（CREATE_NO_WINDOW 防闪控制台）、spawn 后 `register_child` 挂全局 Job Object（壳被杀连带回收，防孤儿）；**stdout/stderr 必须显式 pipe**——tokio 的 spawn 默认继承父进程 stdio，`wait_with_output` 只读管道句柄，不接管道则 output 恒为空（前端"看下方输出"永远没内容，0.2.0 实踩）；输出 stdout+stderr 合并截断 200KB 返回。`validate_spec` 拦截空/超长/`-` 开头（防参数注入）。`busy` Mutex 串行锁：同一时刻只允许一个操作（try_lock 失败报"进行中"），防并发写 profile。
+
+**IPC 契约**：本模块返回前端的结构体（`PluginOpResult`/`PluginStatus`/`PluginRow`）一律 `#[serde(rename_all = "camelCase")]`——前端按 camelCase 读键，漏了 rename 时多词字段（`exit_code`/`pnpm_ready`/`is_bundle`）在前端恒为 `undefined`：`exitCode === 0` 永不成立 → 成功被误报"失败"、pnpm 状态恒显示"缺失"、bundle 徽章恒显示"依赖"（0.2.0 全中）。`ipc_payloads_serialize_camel_case` 锚定测试守门。
 
 **生效方式**：装/卸/更新**没有 MCP 那种 HMR**——新层经 profile manifest 在 web 启动时加载，完成后面板提示"重启 dsh 后生效"，内置"重启 dsh"按钮复用 `restart_dsh` 命令（装多个插件只需最后重启一次）。运行中安装不冲突（Node 模块文件句柄带共享删除标志，pnpm 增删无碍）；若 pnpm 报错引导先重启再重试。
 
