@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-21
+
+### Fixed
+
+- Plugin manager no longer reports a successful install/uninstall/update as "安装失败" (failed). The IPC structs in plugins.rs (`PluginOpResult`/`PluginStatus`/`PluginRow`) were missing `#[serde(rename_all = "camelCase")]` — the convention every mcp.rs struct already follows — so Tauri serialized `exit_code`/`pnpm_ready`/`is_bundle` in snake_case while Plugins.svelte reads camelCase. `r.exitCode` was therefore always `undefined`, `undefined === 0` never holds, and every operation took the failure branch with a blank exit code (Svelte renders `undefined` as nothing). The same mismatch made the status line permanently show "pnpm 缺失" even though the bundled pnpm worked, and forced the bundle badge to always read "依赖". Anchor test `ipc_payloads_serialize_camel_case` pins the wire shape
+- The collapsible "操作输出" (operation output) panel now actually contains output: `run_plugin_op` never piped the child's stdout/stderr — tokio's spawn inherits the parent stdio by default and `wait_with_output` only reads piped handles — so the panel was permanently empty and genuine failures carried zero diagnostics. The child now gets explicit `stdout/stderr(Stdio::piped())`; anchor test `run_captures_child_output` pins it. Verified end-to-end against the real runtime and the real dsh-home: installing `@liustack/modlens` exits 0 with `{"exitCode":0,"output":"…pnpm log…"}`, and installing a nonexistent package exits 1 with pnpm's full 404 error captured
+- The Chinese failure notice now includes the exit code number: the i18n key `失败，退出码` itself had no `{code}` placeholder (only the English translation did), so zh never rendered the code even with the serialization fixed. The key is now `失败，退出码 {code}`
+
+Tests: 184 → 186 (185 passed + 1 ignored)
+
 ## [0.2.0] - 2026-08-21
 
 ### Changed
