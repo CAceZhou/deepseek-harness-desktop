@@ -1,10 +1,10 @@
 ; DSHDesktop NSIS hooks — 安装/卸载前清理残留运行时进程。
 ;
-; 背景：<=0.1.8 把 node.exe（dsh web 服务）与 cloudflared.exe（远程隧道）
-; 作为 DSHDesktop.exe 的普通子进程拉起，而 Tauri 自带的 CheckIfAppIsRunning
-; 只杀主程序。主程序被强杀后这些子进程成为孤儿，仍占用
+; 背景：<=0.1.8 把 node.exe（dsh web 服务）作为 DSHDesktop.exe 的普通子进程
+; 拉起（早期版本还曾带 cloudflared.exe 远程隧道），而 Tauri 自带的
+; CheckIfAppIsRunning 只杀主程序。主程序被强杀后这些子进程成为孤儿，仍占用
 ; <install>\runtime\windows-x64 下的文件，重装时报
-; "Can't write: ...\cloudflared.exe" 中止。
+; "Can't write: ...\node.exe" 中止。
 ; >=0.1.9 起子进程全部挂进 KILL_ON_JOB_CLOSE Job 随父进程退出被内核回收；
 ; 这里的钩子是清理旧版本遗留孤儿的兜底路径，长期保留。
 ;
@@ -29,7 +29,7 @@
   Pop $0
   Pop $1
   ; 2) 主程序已被强杀、只剩孤儿：按可执行路径清扫 $INSTDIR 下的所有残留进程
-  ;    （runtime 里的 node.exe / cloudflared.exe 及 dsh 经内嵌 node 拉起的帮助进程），
+  ;    （runtime 里的 node.exe 及 dsh 经内嵌 node 拉起的帮助进程），
   ;    但排除调用方自身（见文件头注释）。然后轮询等进程退净（句柄释放），
   ;    最多等 10s，避免紧跟着的写/删文件仍被占用。
   nsExec::ExecToStack "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $\"$$self = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $$PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -like '$INSTDIR\*' -and $$_.ProcessId -ne $$self } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; $$deadline = (Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 400; $$left = @(Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -like '$INSTDIR\*' -and $$_.ProcessId -ne $$self }) } while ($$left.Count -gt 0 -and (Get-Date) -lt $$deadline)$\""

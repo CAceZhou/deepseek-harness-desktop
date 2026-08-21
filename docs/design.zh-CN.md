@@ -54,7 +54,7 @@ dsh 本身提供 `dsh web` 命令：在本机 127.0.0.1 上启动一个 Web UI �
 │  pickerpatch.rs browse 选择器包内文件原地补丁：host 加 "dsh:drives" 盘符    │
 │              哨兵层级，client 隐藏条目默认显示+哨兵面包屑本地化/禁用打开     │
 │  welcome.rs  内测声明豁免播种：预写 ui-onboarding.welcomeNoticeVersion      │
-│  remote/     远程访问：token 门岗反向代理 + cloudflared 隧道监督            │
+│  remote/     远程访问：token 门岗反向代理 + 固定端口局域网暴露 + SSH 隧道  │
 │  platform/   Platform trait（windows.rs 实现；macos/linux 为编译期占位）   │
 └──────────────────────────────────┬───────────────────────────────────────┘
                                    │ spawn（CREATE_NO_WINDOW，DSH_HOME 隔离）
@@ -130,7 +130,7 @@ Failed（不再自动重启，前端/托盘可手动 restart）
 - **spawn 参数**：`node bin.js web --port <port>`，`env DSH_HOME=<home>`，`cwd=%LOCALAPPDATA%\DSHDesktop`，stdout/stderr 管道泵入 `LogRing` + 事件流，`kill_on_drop(true)`，再经 `Platform::configure_child_command` 加 `CREATE_NO_WINDOW`（不弹控制台窗口）。
 - **端口**：`free_port()` 让 OS 分配空闲端口——返回到使用之间存在竞态窗口，靠"就绪超时即杀、换端口重试"兜底；`wait_ready` 轮询 `http://127.0.0.1:<port>/` 直到拿到**任意** HTTP 响应（不要求 200）。
 - **stop/restart**：两个 `tokio::sync::Notify`。stop 置 shutdown 标志并通知，循环杀掉进程树（`taskkill /T /F`，dsh 可能派生 python 等子孙）后进入 `Stopped`；restart 在循环存活时通知其立即重来，循环已退出（Failed/Stopped）时重新 spawn 一个监督循环。
-- **Job Object 防孤儿**：spawn 成功后立即 `Platform::register_child(pid)` 把子进程挂进全局 `KILL_ON_JOB_CLOSE` Job（`platform/windows.rs` 的 `job` 模块，句柄刻意永不关闭）。本进程以任何方式退出——包括被 NSIS 安装器/任务管理器强杀——内核都在最后句柄回收时连带终止全部成员及其子孙。0.1.8 之前没有这层保护：安装器只杀主程序，孤儿 node.exe/cloudflared.exe 锁住 runtime 目录导致重装中止（"Can't write: ...\cloudflared.exe"）。cloudflared 监督循环（remote/tunnel.rs）同样注册。
+- **Job Object 防孤儿**：spawn 成功后立即 `Platform::register_child(pid)` 把子进程挂进全局 `KILL_ON_JOB_CLOSE` Job（`platform/windows.rs` 的 `job` 模块，句柄刻意永不关闭）。本进程以任何方式退出——包括被 NSIS 安装器/任务管理器强杀——内核都在最后句柄回收时连带终止全部成员及其子孙。0.1.8 之前没有这层保护：安装器只杀主程序，孤儿 node.exe 锁住 runtime 目录导致重装中止（"Can't write: ...\node.exe"）。
 - **tokio 陷阱**：`Child::kill()` 返回 future，不 await 就不执行；泄漏的子进程若继承了 stdout 管道，外层等管道 EOF 会永远阻塞（集成测试曾因此假挂起）。所有子路径都必须 `kill_on_drop` + 显式 `child.wait().await` + 测试里 stdio 全 null。
 
 ## 7. 事件通知
@@ -182,185 +182,42 @@ dsh WS /api/events.host ─▶ WsSource(host) ─▶ handle_host_frame ─▶ Se
 - `#/skills` **Skills.svelte**：技能管理。数据源是**壳注入给 dsh 的 DSH_HOME**（`<runtime_base>/dsh-home`，不是 `~/.dsh`）：`skills/` 为启用、旁路 `skills-disabled/` 为停用（dsh 的技能发现只认根目录直属条目、无原生禁用概念；移出根目录即停用，watcher 观察到变化后热刷新 catalog，无需重启）。导入从三个外部 agent 的用户级源复制目录：Codex `~/.codex/skills`、Claude Code `~/.claude/skills`、OpenCode `~/.config/opencode/skills`；同名冲突逐个选覆盖/跳过（覆盖会同时清掉禁用目录里的旧副本）。**独立 dsh 的默认目录 `~/.dsh/skills` 不作为导入源**——壳就是 dsh，启动时自动扫描它并补入新技能（`skills::seed_from_default_dsh_home`；`.skills-seeded` marker 记录已见名字，壳里删掉的不会复活）。删除只删 home 内副本，不动源目录。还可本地导入 ZIP 压缩包（`inspect_zip_skills`/`import_zip_skills`）：自动识别两种布局——包根直接含 SKILL.md（名字取 frontmatter name，缺失回退 zip 文件名）或顶层若干技能文件夹各含 SKILL.md；解包剥掉顶层前缀，条目路径经 enclosed_name 过滤防 zip-slip，另有 1 万条目/256MB 上限防 zip 炸弹；冲突语义与目录导入一致（跳过/覆盖，覆盖清两侧）。Rust 侧 `skills.rs` 的 frontmatter 解析只取单行键，行上操作均以目录名为准。
 - `#/plugins` **Plugins.svelte**：插件管理（npm/cordis 插件的图形化装/卸/更新，详见 §18）。
 - `#/mcp` **Mcp.svelte**：MCP server 管理（列表/启停/删除/新增/编辑 + 导入）。dsh 没有独立的 mcp.json——MCP server 是 Cordis 插件补丁，壳读写 `<dsh-home>/profiles/web/cordis.patch.yml` 中 `name == '@deepseek-ai/dsh-mcp-client'` 的 insert 条目（只动这些条目，其余 Value 级保留；tmp+rename 原子写；读前剥 BOM）。dsh 的 HMR（`watchUserPatches` + chokidar）监听该文件，改后自动 disconnect+reconnect，**无需重启**。启停 = entry 上加/去 `disabled: true`（cordis-plugin-loader 原生语义，disabled 的 entry 不起 fiber）。编辑以旧 config 为底、只覆盖表单字段，`toolCallTimeoutMs`/`reconnect.*` 等高级键保留；transport 只有 `stdio`（command/args/env/cwd）与 `streamable-http`（url/headers）两种，sse 不支持。启动时种子同步 `~/.dsh` 两层 patch 里的 MCP 条目（`mcp::seed_from_default_dsh_home`，`.mcp-seeded` marker 防复活；源里 disabled 的不同步也不记 marker，日后在 ~/.dsh 启用时仍能进来）。手动导入三源：Claude Code `~/.claude.json` 的 `mcpServers`（stdio/http 映射，sse 标记"不支持"跳过）、Codex `~/.codex/config.toml` 的 `[mcp_servers.*]`（`enabled=false` 不列出）、OpenCode `~/.config/opencode/opencode.json` 的 `mcp` 段（local/remote 映射）；冲突逐个覆盖/跳过。patch 文件解析失败（如含无法处理的语法）时页面降级为只读并提示手工编辑。
-- `#/remote` **Remote.svelte**：远程访问。状态取 `get_remote_status` 快照并订阅 `remote-status` 事件；Up 态显示二维码（`get_remote_qr` 返回 SVG）与完整链接，链接变化（隧道重连换域名）自动重取二维码；开关按钮按当前 phase 调 `start_remote` / `stop_remote`。
+- `#/remote` **Remote.svelte**：远程访问。状态取 `get_remote_status` 快照并订阅 `remote-status` 事件；Up 态显示二维码（`get_remote_qr` 返回 SVG）与完整链接，链接变化（每次开启 token 换新）自动重取二维码；开关按钮按当前 phase 调 `start_remote` / `stop_remote`。
 
 窗口行为：
 
 - 主窗口 `main`：**关窗行为可配置**（settings.json 的 `close_behavior`）：默认 `background` = 隐藏到托盘（`CloseRequested` 时 `prevent_close` + `hide`），`quit` = 走托盘"退出"同一流程直接退出程序；托盘"打开主界面"、**左键单击托盘图标**（`on_tray_icon_event` 的 Left/Up；`show_menu_on_left_click(false)`，菜单改走右键）或二次启动（单实例插件）时 `show` + `unminimize` + `set_focus`——窗口只是隐藏未销毁，位置保持隐藏前状态。
-- 诊断窗口 `diagnostics`、设置窗口 `settings`、技能窗口 `skills`、插件窗口 `plugins`、MCP 窗口 `mcp`、远程访问窗口 `remote`：托盘菜单按需创建，**关窗 = 销毁**，下次再建。**创建即按壳当前解析主题铺底（tray.rs `theme_bootstrap`）**：`background_color` 给 WebView2 预绘制底色（深 `#0f1115`/浅 `#f5f6f8`，与 app.css 两主题的 `--bg` 一致），`initialization_script` 在首个绘制帧前写死 `data-theme` 与 `color-scheme`——否则 `visible(false)` + `on_page_load` 才显示也救不了"系统浅色 + dsh 深色"组合：app.css 首帧按系统色兜底（`@media prefers-color-scheme: light` 的浅色变量分支），页面 JS 置 `data-theme` 之前整页白几秒（插件管理页实踩）。主窗口不挂这个初始化脚本（它是远程 dsh UI，主题归 dsh 自己管）。
-- 托盘"退出"：先 `stop()` 远程访问（杀 cloudflared 进程树 + 关停鉴权代理，链接即刻失效），再 `stop()` dsh，等 1.5s 让监督循环杀完进程树，最后 `exit(0)`。
-- 导航到远程 URL 后窗口标题被 dsh 的 `document.title` 覆盖——**外部脚本不要按标题找窗口**（按 PID + 类名，见 `scripts/shot-window.ps1`）。
-- **首次启动居中**：主窗口（setup 里 builder `.center()`，tauri.conf `windows` 已空）与托盘按需创建的五个窗口都以屏幕居中为默认位置；window-state 插件的 restore 在 window_created 时排队、早于首个可见帧执行，有记忆几何时覆盖居中默认值——首次启动居中、之后按上次位置，居中默认不会闪一帧再跳变（verify-no-size-flash.ps1 探针断言首个可见帧即记忆几何）。
-- **下载处理（download.rs）**：WebView2 的下载不接管则静默消失——wry 默认 handler 放行但 `SetHandled(true)` 抑制了下载 UI，用户看不到文件去向（dsh "Session log" 导出即受此影响）。主窗口 builder 挂 `on_download`：Requested 时把目标改到系统下载目录（`dirs::download_dir`，已存在则追加 " (n)" 序号防覆盖），Finished 时按成败弹 toast 告知落盘路径；全程记 events.log（`Download: requested/finished`）。
+- `mod.rs` — `RemoteManager`：生命周期（start/stop/status）、token 生成（每次 start 重新
+  生成 256-bit hex）、6 个 invoke 命令（start_remote/stop_remote/get_remote_status/
+  copy_remote_link/get_remote_qr/reset_remote_link）。start 时读运行配置（`RemoteConfig`
+  watch 通道：固定端口 + SSH 隧道配置，settings.rs 保存设置即更新，无需重启应用），把
+  鉴权代理绑到 `0.0.0.0:<端口>`；SSH 模式再拉起反向隧道并**等隧道就绪才转 Up**（避免
+  链接 URL 对外但隧道未建立），链接 = `http://<服务器地址>:<暴露端口>/?token={token}`
+  （协议跟随服务器地址前缀：带 https:// 则链接走 https；端口可用 link_port 覆盖——
+  自建服务器用反向代理对外公布、对外端口 ≠ SSH 转发端口时填对外端口，隧道 -R 绑定的
+  仍是 expose_port，两者解耦），否则 = `http://<局域网IP>:<端口>/?token=…`
+  （局域网 IPv4 用 UDP connect 选默认路由接口，不发包）。端口被占用/SSH 配置不完整 →
+  error 态并提示。状态变更广播 `remote-status` 事件 + 更新托盘子菜单 enabled + events.log。
+  `reset_link` 原地轮换 token 并掐断现有会话（链接泄露后的吊销手段），地址与端口不变。
+- `ssh_tunnel.rs` — SSH 反向隧道监督：`ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes
+  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=30
+  -o ServerAliveCountMax=3 -p <ssh_port> -i <key> -R 0.0.0.0:<暴露端口>:127.0.0.1:<固定端口>
+  <user>@<server>`。BatchMode=yes 禁止交互输入（鉴权只走私钥/ssh-agent）；ExitOnForwardFailure
+  让转发绑定失败（端口占用/GatewayPorts 未开）直接退出并进 stderr；错误关键字（Permission
+  denied/remote port forwarding failed 等）命中 → 计数退避重启，累计 MAX_FAILURES 后
+  终态 Failed 并把错误透出；进程稳定存活 UP_TIMEOUT 且无错 → Up。停止走 kill 进程树 +
+  Job Object 兜底。exe 经 `Platform::ssh_client_exe` 取（Windows 优先系统自带
+  C:\Windows\System32\OpenSSH\ssh.exe，Win10 1809+ 自带；测试注入 node + fixture 脚本）。
+- `proxy.rs` — axum 反向代理，绑 `0.0.0.0:<固定端口>`（局域网直接可达）。鉴权：有效 cookie `__dsh_remote` 直接转发；`?token=` 匹配（常数时间比较）→ 302 剥离 token + 种 HttpOnly cookie（**不带 Secure**：局域网直连是明文 HTTP，Secure cookie 浏览器在 http 下不存不发，带了整条鉴权链断掉）；token 不匹配 → 固定 500ms 延迟后 403；无凭据 → 403 门页。HTTP 经 reqwest 流式转发（3xx 透传不跟随）；WS upgrade 在代理终结握手后与 dsh 另建连接逐帧双向桥接。dsh 端口走 `watch::Receiver` 动态读取，dsh 重启代理不断线。**token 存共享单元（RwLock），门岗逐请求读最新值**——重置后旧链接/旧 cookie 即刻失效；**WS 桥接同时挂 drain Notify**（`enable()` 提前挂号防 connect 窗口期漏掐），重置/停服 `notify_waiters` 掐断所有已建立连接，否则泄露场景下攻击者已开的页面仍能持续收事件流。**转发必须剥掉浏览器标记头**（`origin`/`referer`/`sec-fetch-*`）：dsh 的 /api 信任栅栏（dsh-client-connection `isTrustedApiRequest`）要求 Origin.host == Host 头且拒绝 `sec-fetch-site: cross-site`，局域网/隧道场景 Origin 是 http://<局域网IP>:<端口>（或 trycloudflare）域名，不剥则页面所有 RPC 调用全 403；剥掉后请求在 dsh 眼里是无 Origin 的 loopback 客户端（WS 桥接侧 tungstenite 握手本就不带 Origin，天然满足）。**转发客户端必须 `.no_proxy()`**——用户系统代理（Clash 等）否则会把 127.0.0.1 转发劫持走。**插件 bundle 改写**：`/plugins/*/client.js` 响应被缓冲（≤4MB、仅 identity 编码）并把 `connection.isLoopback ? "host" : "memory"` 全量替换为 `"host"`——dsh 内测声明（WelcomeNoticeStore）对非回环源选 memory 持久化，局域网/隧道访问下确认记录不落 settings.yaml 导致每次连接都弹；改写后远程端与桌面端共用 host 持久化（桌面本就已确认，远程直接不弹）。改写路径转发时剥 `accept-encoding`（求 identity）与条件请求头（防 304），响应剥 `content-length`/`etag`；needle 失配（dsh 改版换写法）静默原样透传，声明照弹但不破坏页面。**HTML 文档注入移动端适配（mobile.css + mobile.js）**：文档导航请求（accept 含 text/html）且响应确为 `text/html` 时，缓冲后往 `</head>` 前注入 `mobile.css` 与 `mobile.js`（编译期 `include_str!` 内嵌，注入点带 `<!-- dshdesktop-mobile -->` 标记）——dsh Web UI 未做手机适配，实测三处破版：设置弹窗左侧 188px 固定导航列把内容区压到一字一行竖排（全屏化 + 导航改顶部横向 tab 条修复）、narrow 模式展开侧栏占 280px 固定网格轨把主区压到 110px（轨道归零 + 侧栏内容溢出成抽屉修复）、输入区 trailing 组 `flex:0 0 auto` 把 + 按钮压到与模型名重叠（模型选择器图标化：隐藏型号/推理档位文案、mask+currentColor 补火花图标，型号在点开的二级菜单里选；触发器改静态定位把弹出菜单的包含块上移到输入卡片，修 right:0 右对齐导致的左越界裁切；回合统计行 ~460px 宽单行必截断——mobile.js 随同注入（dsh 无 CSP）：在会话页“对话/轨迹”旁加“信息”标签，点开把统计行克隆进全屏面板逐行展示（MutationObserver 跟随同步；克隆而非搬家——React 对被移走的节点 removeChild 必崩），打 data-dshmobile-enhanced 后隐藏输入区下方的原行，且标记跟随 matchMedia 断点（旋屏/拉窗离开 700px 即摘除恢复原行，防宽屏下标签被 CSS 隐藏、统计无处可见）；JS 失效或节点未命中时 CSS 兜底：隐藏 | 分隔符改弹性换行两行居中，信息全保留）。断点 700px（桌面壳窗口最小宽 900px 永不命中，注入只影响经代理的远程访问）；选择器只锚语义钩子（`[role="dialog"]`、`data-sidebar-collapsed` 展开时属性不存在）与 CSS Modules 本地名子串（`[class*="_nav"]` 等，哈希前缀随版本变化不影响），上游改名则对应规则静默失效回到未适配状态。找不到 `</head>` 或非 HTML 一律原文透传。
+（旧版曾有 `tunnel.rs`——cloudflared quick tunnel 监督；已删除，远程访问不再依赖外网隧道。） (feat: 远程访问改用局域网固定端口 + SSH 反向隧道内网穿透)
 
-IPC 命令：commands.rs 8 个——`get_shell_ui_state` / `get_status` / `restart_dsh` / `get_recent_logs` / `get_autostart` / `set_autostart` / `get_bootstrap_error` / `is_first_launch`；另有 zoom.rs 的 `zoom_ui`、settings.rs 的 `get_shell_settings` / `set_shell_settings` / `preview_completion_sound`、skills.rs 的 `list_skills` / `list_import_sources` / `import_skills` / `set_skill_enabled` / `delete_skill` / `inspect_zip_skills` / `import_zip_skills`、mcp.rs 的 `list_mcp_servers` / `upsert_mcp_server` / `set_mcp_enabled` / `delete_mcp_server` / `list_mcp_import_sources` / `import_mcp_servers`、plugins.rs 的 `get_plugin_status` / `list_plugins` / `search_plugins` / `install_plugin` / `uninstall_plugin` / `update_plugins`、remote/mod.rs 的 `start_remote` / `stop_remote` / `get_remote_status` / `copy_remote_link` / `get_remote_qr` / `reset_remote_link`、update.rs 的 `check_update` / `download_update` / `install_update` / `open_update_page`（共 41 个，见 build.rs AppManifest）。
+**安全模型**：链接即凭据（托盘/二维码页有"勿分享"提示）；token 每次开启重新生成，停止/退出应用即整体失效（quit 顺序：先 stop 远程访问再 stop dsh）；泄露时"重置链接"一键吊销（token 轮换 + 掐断现有会话，端口不变）。鉴权代理监听 `0.0.0.0:<端口>`，dsh 本身仍只监听 loopback。**token 不落日志**：events.log 只记 phase/url/error/proxy_port（不含链接），任何 `?token=` 查询串经 `redact_token` 脱敏；开启成功的 toast 正文不带链接（系统通知中心会留痕），只提示去托盘复制。**已知取舍**：链路是明文 HTTP（无 TLS），同一局域网内可被嗅探——靠"局域网信任 + 每次开启轮换 token + 泄露即重置"兜底，建议仅在可信网络（自家 Wi-Fi）使用；SSH 隧道把明文 HTTP 暴露到公网，暴露面更大，务必用强私钥、注意服务器端口防火墙放行范围；端口固定但 token 每次开启都换，链接仍不能收藏复用（每次开启重新扫码）。
 
-壳设置（settings.rs）：
+**分发**：不再随 runtime 携带 cloudflared，`fetch-runtime.ps1` 已移除相关下载；远程访问零外部依赖（纯壳内 axum 代理 + 系统自带 OpenSSH 客户端，Win10 1809+ 无需额外安装）。
 
-- **模型**：`settings.json` 存 `zoom_step`（0.01–0.25，越界 clamp）、`zoom_in`/`zoom_out` 快捷键（`{ctrl, shift, alt, code, key}`）、`close_behavior`（`background`/`quit`）、`notify`（`{approval, question, turn_done}` 三条 `{enabled, timing}` 规则，默认全开、仅后台时提醒；旧版 `notify_on_completion` 布尔读取时迁移进 `notify.turn_done.enabled`，保存时不再写出）、`completion_sound`（`silent`/`default`/`im`/`mail`/`reminder`/`sms`/`chime`/`drop`/`mellow`，默认 `default`）。缺失/损坏 → 全默认；部分字段缺失 → 逐字段回退默认（serde default）；校验失败（无修饰键/in-out 冲突）→ 全默认，不带坏状态跑。
-- **SettingsState**：托管内存值 + 持久化目录；`set` 先 clamp/校验再落盘再替换内存，校验或落盘失败则内存磁盘都保持旧值（落盘失败显式报"设置写入失败： …"——静默吞掉会让用户看到保存成功/无关报错而重启后回退，无法定位环境阻断）。
-- **set_autostart 的幂等防御**：每次保存设置都会调 `set_autostart`，而 auto-launch 0.5 的 `disable()` 无条件 `RegDeleteValueW`——Run 值不存在时返回 `ERROR_FILE_NOT_FOUND`，从未开过自启动的用户每次保存都弹"系统找不到指定的文件。 (os error 2)"。命令先 `is_enabled()` 比对目标态，已达成即 Ok（顺带避免每次保存重写注册表）；commands.rs 有锚定测试钉住上游行为，上游改幂等后可简化。
-- **保存即生效**：`set_shell_settings` 成功后对主窗口重注入缩放钩子（快捷键定义内嵌在脚本里必须重注入）；步进不写死在脚本里，`zoom_ui` 调用时从设置读，改步进本来就无需重注入。
+**UI**：托盘子菜单（开启/关闭互斥 enabled、复制链接、显示二维码、重置远程链接——复制/二维码/重置仅 Up 可用）+ `#/remote` 本地窗口（二维码 SVG 由 `qrcode` crate 生成、复制、重置（confirm 确认）、开关按钮）+ 诊断面板"远程访问"状态行 + "其它设置"的"远程访问端口"输入（默认 7788，保存即生效，下次开启用新端口）与"SSH 隧道（内网穿透）"卡片（开关/服务器地址/SSH 端口/用户名/私钥路径（原生文件选择）/暴露端口/链接端口（可选，留空跟随暴露端口，反向代理对外公布时填对外端口）；开启时前端与后端都校验必填与端口范围）。locale 切换重建托盘菜单后 `TrayRemoteItems` 句柄替换并按当前 phase 重设 enabled。Windows 防火墙首次开启时可能弹"允许访问"提示，需放行 DSHDesktop 与该端口。
 
-UI 缩放（zoom.rs）：
-
-- **快捷键**：默认 `Ctrl+Shift+=` 放大、`Ctrl+Shift+-` 缩小（可在设置窗口自定义），步进默认 ±2 个百分点（可配 1%–25%，clamp 到 25%–500%）。钩子脚本由 `hook_js(&ShellSettings)` 生成——快捷键定义内嵌为 JSON，匹配逻辑与 `Shortcut::matches` 对齐：`e.code` 物理键位为主，`e.key` 兜底（合成按键与 RDP 注入的 keydown `e.code` 为空，纯 code 匹配会整组失效），meta 永不命中。`on_page_load` 在每次整页加载完成后 eval 注入（**只注入 main 窗口**——设置窗口录制快捷键时不能被钩子抢先拦截；本地 splash 与远程 dsh UI 通用），capture 阶段拦截并 invoke `zoom_ui`（负载 `direction: "in"/"out"`），经 WebView2 原生 `SetZoomFactor` 生效——与浏览器 Ctrl++ 同一机制。监听器可热替换（`__dshZoomHookHandler` 存旧 handler，重注入先 `removeEventListener` 再挂新的，不叠加）。
-- **持久化**：每次变更即写 `%LOCALAPPDATA%\DSHDesktop\ui-zoom.txt`；缺失/损坏回退 100%；每次页面加载时 `on_page_load` 统一重应用当前缩放（兼作 WebView2 重建后的兜底）。
-- **远程 IPC**：dsh UI 是远程源，Tauri 对远程源的 IPC 一律走 ACL（无 app manifest 时远程调用全部拒绝）。因此 build.rs 用 `AppManifest::commands` 声明全部 41 个命令（生成 `permissions/autogenerated/allow-*.toml`），`capabilities/dsh-remote.json` 只对 `http://127.0.0.1:*` 开放 `allow-zoom-ui` 一个命令。**副作用**：本地页面的 app 命令也转为 ACL 管控，default.json 已逐个 allow——**新增命令必须同步三处**：build.rs 的 commands 列表、capabilities/default.json（本地）、按需 dsh-remote.json（远程）。
-
-## 10. 平台抽象
-
-```rust
-pub trait Platform: Send + Sync {
-    fn node_exe_name(&self) -> &'static str;            // "node.exe" / "node"
-    fn runtime_base_dir(&self) -> PathBuf;              // 应用数据根目录
-    fn resource_runtime_dir(&self, resource_dir: &Path) -> PathBuf; // <res>/runtime/<triplet>
-    fn runtime_triplet(&self) -> &'static str;          // "windows-x64" / "darwin-arm64" ...
-    fn kill_process_tree(&self, pid: u32);              // taskkill /T /F（同样带 CREATE_NO_WINDOW，否则退出/重启闪 cmd 窗口）
-    fn configure_child_command(&self, _cmd: &mut Command) {} // CREATE_NO_WINDOW 等
-    fn system_dark_mode(&self) -> bool;                 // 注册表 AppsUseLightTheme
-}
-```
-
-`mod.rs` 对 macOS/Linux 是 `compile_error!` 占位——新增平台时编译器会强制你实现 trait 并接线 `current()`。配套还要做：`scripts/fetch-runtime.ps1` 支持对应 triplet 的 Node 下载、tauri.conf `bundle.targets` 加 dmg/appimage、CI matrix 打开对应行（`.github/workflows/build.yml` 注释里有清单）。主题着色在 `theme.rs` 里按 `cfg(windows)` 分支，其他平台走 `set_theme` 即可。
-
-## 11. 打包与分发
-
-### 运行时管线
-
-```
-scripts/fetch-runtime.ps1
-  1. 下载 Node v24.19.0 win-x64 zip，只取 node.exe
-  2. npm install --prefix dsh --omit=dev @deepseek-ai/dsh@0.1.0-rc.8
-  3. 冒烟：node bin.js --help
-  4. 调 scripts/prune-runtime.ps1 精简
-产物：src-tauri/runtime/windows-x64/（gitignore，不入库）
-```
-
-`prune-runtime.ps1` 的规则（支持 `-WhatIf` 预演）：
-
-- 通用：删 `test/tests/__tests__/docs/example/examples/coverage/.github` 等目录；删 `*.d.ts/*.map/*.md/LICENSE*/CHANGELOG*` 等文件；
-- node-pty：只保留 `prebuilds/win32-x64`（删 darwin-*/win32-arm64 约 30MB），另删 src/deps/third_party 等；
-- `@img/sharp-wasm32`（9MB）：sharp 已有 win32-x64 原生包时用不到，删。
-
-效果：staging 344→227.9MB；安装包 **45.2MB**；安装后 **241.8MB**（大头是 node.exe ~90MB 与 dsh 依赖树，运行时与 node-pty 终端必需的 native 模块不能再删）。
-
-### 安装包
-
-- `pnpm tauri build` → NSIS `src-tauri/target/release/bundle/nsis/DSHDesktop_<ver>_x64-setup.exe`。
-- WebView2：缺失时安装程序联网下载安装（downloadBootstrapper 模式），因此安装包本体不含 WebView2。
-- 静默安装：`setup.exe /S`（加 `/D=<dir>` 指定目录）。运行中的旧实例由安装器自动结束，无需手动卸载或杀进程。
-- NSIS 钩子（`src-tauri/windows/nsis-hooks.nsh`，经 `bundle.windows.nsis.installerHooks` 接入，**路径相对 `src-tauri`**）：`NSIS_HOOK_PREINSTALL`/`NSIS_HOOK_PREUNINSTALL` 先 `taskkill /F /IM DSHDesktop.exe` 杀主程序（**绝不带 `/T`**：立即安装拉起的安装器与 `_?=` 原地运行的旧卸载器都是 DSHDesktop.exe 的后代，/T 会把它们一并杀掉——0.1.16 及以前"立即安装"装不上即此因；≥0.1.9 的子进程由 KILL_ON_JOB_CLOSE Job 随主程序死亡被内核连带回收，杀树本就多余），再用 PowerShell 按可执行路径清扫 `$INSTDIR` 下的所有残留进程（≤0.1.8 遗留的孤儿 node.exe/cloudflared.exe），然后轮询等进程退净（≤10s）等内核回收句柄。Tauri 模板自带的 `CheckIfAppIsRunning` 只杀主程序，杀不动子进程，单靠它必然复现 "Can't write" 失败。**清扫必须排除调用方自身**（取 PowerShell 父进程 PID）：覆盖安装/升级时模板在 `PageLeaveReinstall` 以 `_?=$INSTDIR` 原地运行旧卸载器，`$INSTDIR\uninstall.exe` 同样匹配 `$INSTDIR\*` 模式——0.1.9~0.1.12 没排除，卸载器把自己杀了，文件没删、退出码非零，新安装器弹 "Unable to uninstall!" 中止；独立卸载（设置/开始菜单）会自我复制到 %TEMP% 运行所以从不触发。`NSIS_HOOK_POSTUNINSTALL` 再 `RMDir /r "$INSTDIR\runtime"` 兜底清单外残留（dsh 自更新新增的文件不在卸载清单里），模板的空目录 RMDir 才能收掉 `$INSTDIR`。已知问题：≤0.1.12 升级 ≥0.1.13 会最后一次弹该对话框（旧卸载器无法被新安装器修复），先在系统设置里卸载再装即可。
-- 国内构建机直连 GitHub 不稳时，NSIS 下载可用 ghproxy 预置 `%LOCALAPPDATA%\tauri\NSIS`（细节见 AGENTS.md）。
-
-### CI 与发布
-
-- `.github/workflows/build.yml`：tag `v*` 或手动触发 → windows-latest 上 fetch-runtime → `cargo test` → `tauri build` → 上传 artifact。
-- `.github/workflows/release.yml`：tag `v*` 触发，构建后直接把 setup.exe + SHA256 发布到 GitHub Release。
-- 版本号三处同步：`package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`。
-
-## 12. 测试策略
-
-| 层 | 内容 | 命令 |
-| --- | --- | --- |
-| Rust 单元测试（99） | runtime 部署/回退/路径归一化/复制进度回调、progress 阶段权重与百分比映射、theme BOM 解析与首启播种、notify 帧分类/子代理台账/摘要、LogRing 淘汰、port 分配与就绪探测、platform 基础、zoom clamp/持久化/钩子脚本内嵌设置、settings 模型/校验/持久化/提示音枚举/通知规则门控与旧键迁移、skills frontmatter 解析/列表/启停/删除/导入冲突、mcp patch 解析/启停/删除/upsert 校验与高级键保留/种子 marker/三源解析与导入冲突、remote 隧道 URL 解析与 token 脱敏 | `cd src-tauri && cargo test` |
-| 进程集成测试（2，tests/process.rs） | 用 `tests/fixtures/fake-dsh.cjs`（可脚本化崩溃的假 dsh）验证 就绪→HTTP 200→stop、崩溃→自动重启→二次 Ready | 同上 |
-| 通知集成测试（2，tests/notify_ws.rs） | fixture 双 WS 端点发事件帧，验证 approval 过滤、turn/end 完成通知（含标题）、子代理过滤 | 同上 |
-| 远程访问集成测试（12，tests/remote_{proxy,tunnel,manager}.rs） | 门岗 403/302/cookie/转发/浏览器标记头剥离（防 dsh 信任栅栏 403）/WS 桥接/503/停服释放端口、fake-cloudflared URL 解析与崩溃重启、manager 全链路（缺文件 error、up→stop、start 幂等） | 同上 |
-| 控制台窗口回归（3，tests/console_window.rs） | 正组：CREATE_NO_WINDOW 的子进程**无可见** ConsoleWindowClass 窗口；对照组：CREATE_NEW_CONSOLE 的子进程**有**（证明检测有效，屏幕上会短暂弹真实控制台窗口，属正常）；kill_process_tree 闪窗回归：无控制台父进程（CREATE_NO_WINDOW 重拉自身 + FreeConsole）里连杀 30 棵树，断言全程抓不到 taskkill 的可见控制台窗口 | 同上 |
-| 端到端验收（scripts/acceptance.ps1） | 卸载旧版 → 静默安装 → 启动 → 等 dsh 就绪 → 单实例/无可见控制台/主题/截图 全项校验 | `powershell -File scripts/acceptance.ps1 -SetupExe <exe>` |
-
-改进程/通知/主题逻辑后：`cargo test` + 重装走一遍 acceptance.ps1。
-
-**调试手段优先级**：诊断面板（应用内） → `%LOCALAPPDATA%\DSHDesktop\events.log`（每个进程事件一行，1MB 截断；面板依赖应用内交互，卡启动时只有它能看） → `scripts/check-node.ps1` / `get-attr20.ps1` / `shot-window.ps1` 等外部脚本。
-
-## 13. 已知限制与后续路线
-
-- **Win10 深色标题栏聚焦纯黑**：系统行为，见 §8。路线：无边框 + 自绘标题栏（需处理 Win10 贴边分屏），暂缓。
-- **通知覆盖**：approval/question + 回合正常完成（turn/end/completed，可带提示音）；任务出错（kind==error）暂不提醒。子代理过滤依赖 events.host 增量帧，host 重连窗口期内可能多弹一条（fail-open）。其余事件类型待 dsh 上游接口稳定后再扩。
-- **dsh 版本固定**：随应用版本钉死（fetch-runtime 的 `-DshVersion`），dsh 升级 = 发新版应用（跟版流程见 §14）。将来可考虑应用内自选 dsh 通道。
-- **UI 缩放只作用于主窗口**：诊断/设置窗口不注入钩子、不应用缩放值；快捷键与步进均可在"其它设置"中自定义。
-- **fs-local 列目录遇 ACL 拒绝项即整列失败**：上游行为——列举目录时逐个子项解析，任一子项权限被拒（如 `C:\\` 根目录的 `DumpStack.log`、`C:\\Users` 下他人配置目录）整个列表报 `cannot list ...: permission denied`。Windows 上列系统盘根目录必现。壳侧不修它，缓解是让模型知道并待在自己的 workspace（极简模式的 persona 已补工作目录事实）。
-- **仅 Windows x64**：平台抽象已就绪，见 §10 的扩展清单。
-
-## 14. 更新策略（跟随 dsh 上游）
-
-上游源仓库：[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（npm 包 `@deepseek-ai/dsh`）。壳不 fork、不打补丁、不改 dsh 源码（§1 非目标），只做跟版发版。**唯一例外**是 presets.rs 的极简模式 Windows 修复：上游 rc 的 minimal 预设无条件挂载 PTY 持久 bash，而终端检查器未实现 win32，且 composeProfile 会把 agent-presets 行的 roots 无条件重写为 shipped root、profile patch 层无法注入影子根——只能启动期原地改写 shipped 预设文件（配置组合而非代码）。该补丁签名门控（上游加了 win32 分支即自动停手）、幂等、随 dsh 自更新还原后重打；上游修复后应整体移除。dsh 的内部优化（启动速度、UI 迭代等）对壳透明，重打包即受益。
-
-**版本钉死**：dsh 随应用版本钉死在安装包里（`fetch-runtime.ps1` 的 `-DshVersion`），用户机器上的 dsh 不会自动更新——**dsh 升级 = 我们发一版新应用**。
-
-**跟版流程（常规升级为纯流程，零代码改动）**：
-
-1. 关注上游 release 与 npm 版本流，对照 §15 事实清单评估是否触及接口契约。
-2. 改 `scripts/fetch-runtime.ps1` 的 `-DshVersion` 默认值，重新抓运行时（含冒烟与 prune 精简）；若上游新增依赖（尤其 native 模块、多平台 prebuilds），按需调整 `prune-runtime.ps1` 规则。
-3. `cd src-tauri && cargo test` 全绿 → `pnpm tauri build` → `scripts/acceptance.ps1` 全项验收。**契约核对表由 `tests/upstream_contract.rs` 自动执行**（真实运行时探测，无运行时自动 skip；CI 的 fetch-runtime 在 cargo test 之前，故 CI 一定真跑）：红了说明上游变了，按失败输出的指引改 `src-tauri/src/upstream.rs` 对应常量（全部上游事实的单一来源，每条注明出处与影响面），必要时动对应消费模块。
-4. 三处版本号同步（§11）后打 tag `v*`，CI 自动构建并发布 GitHub Release。
-
-**接口契约核对表（上游变了才动代码；代码化身：`src-tauri/src/upstream.rs` 常量 + `tests/upstream_contract.rs` 探测）**：
-
-| 上游事实（当前值见 §15） | 变了要动哪里 |
-| --- | --- |
-| 入口 `lib/bin.js` 路径 | `upstream.rs` 的 `DSH_PKG_SEGMENTS`/`DSH_BIN_SEGMENTS`（`runtime.rs` 的 `paths_for`/`validate_source` 经助手自动跟随） |
-| `web --port <N>` 命令形式 | `upstream.rs` 的 `DSH_WEB_SUBCOMMAND`/`DSH_PORT_FLAG`（`process.rs` spawn 引用） |
-| 事件通道 `/api/events.mux` + `/api/events.host` 及帧格式 | `upstream.rs` 的 `EVENTS_*_PATH` 与帧常量（`notify/` 适配层引用；`NotifySource` trait 隔离来源实现） |
-| `settings.yaml` 的 `ui-theme.preference` | `upstream.rs` 的 `SETTINGS_FILE`/`KEY_*`（`theme.rs` 解析与首启播种引用） |
-| Node 版本要求 | `fetch-runtime.ps1` 的 `-NodeVersion` + `upstream.rs` 的 `DSH_NODE_MAJOR_FLOOR` |
-| WS 信任栅栏（loopback / 无 Origin） | 契约套件直接探测（错 Origin→403）；行为变了重估 `remote/proxy.rs` 剥头策略 |
-| 内测声明三元式 needle | `upstream.rs` 的 `WELCOME_NOTICE_NEEDLE`（`remote/proxy.rs` bundle 改写引用） |
-| WS 信任栅栏（loopback / 无 Origin） | `notify/ws.rs` 握手 |
-
-契约变化大多会在 `cargo test`（WS 通知集成、主题解析等单测）或 acceptance 全链路中暴露；现场问题先看 `events.log`。
-
-**回滚**：新版 dsh 出严重问题、壳又要先发补丁时，`-DshVersion` 回退到上一可用版本重打包即可——用户数据全在 `dsh-home`，与 dsh 版本解耦。
-
-## 15. 附录：dsh 上游事实清单（0.1.0-rc.8）
-
-> 本表是文档形态；代码化身在 `src-tauri/src/upstream.rs`（单一事实源），
-> 自动核对由 `tests/upstream_contract.rs` 执行。跟版改了 upstream.rs 就同步本表。
-
-| 事实 | 值 |
-| --- | --- |
-| npm 包 | `@deepseek-ai/dsh@0.1.0-rc.8`（子包依赖为浮动区间，抓取时解析到最新 rc；npm latest 标签可能滞后于最新 rc，fetch 须显式 `-DshVersion`；dsh-web-app rc.8 起 openBrowser 默认 true） |
-| Node 要求 | `^22.19 \|\| >=24`（上游仓库声明；发布 tarball 不含 engines 字段，契约套件实测确认。随包内嵌 v24.19.0） |
-| 入口 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
-| Web 命令 | `bin.js web --port <N> --no-open`，仅绑 127.0.0.1；`--no-open` 抑制系统浏览器弹出（dsh-web-app rc.8 起 openBrowser 默认 true） |
-| 内测声明 | `dsh-client-ui-settings-models/lib/client.js` 的 welcome notice：`settings.yaml` 的 `ui-onboarding.welcomeNoticeVersion` ≠ 文案版本（如 `2026-08-13.1`，从 client.js 提取）时每次启动弹窗 → 壳 welcome.rs 启动期预写豁免 |
-| 事件通道 | WebSocket `/api/events.mux` + `/api/events.host`（GET → 426，仅 WS） |
-| 事件帧 | `{"type":"server-request","method":<payload.type>,"payload":{...}}`；完成判定用 `session/event` 里的 `turn/end`（`data.reason.kind`），子代理标记用 `host/session-added` 的 `origin` |
-| 设置文件 | `$DSH_HOME/settings.yaml` → `ui-theme.preference: light\|dark\|system` |
-| 信任栅栏 | 允许 loopback + 无 Origin 的 WS 连接 |
-| Agent 预设 | `config/agent-presets/{minimal,standard,code,cordis}`；rc.8 起全部自带 win32 平台分支（minimal 的 persistent-bash/persistent-pwsh 按 `process.platform` 互斥禁用，subprocess-local 新增 win32 终端检查器）→ 壳的原地改写补丁器已退役，presets.rs 仅存只读签名探测（契约套件断言 UpstreamHandled 当回归哨兵） |
-| 目录选择器 browse | host `dsh-host-directory-picker-browse/lib/index.js`：`list()` 只认全限定路径、无盘符枚举入口；client `dsh-client-ui-directory-picker-browse/lib/client.js`：`showHidden` 默认 false 且开框重置、`displayCrumbs` 把 home 前缀折叠成"主页" → 壳 pickerpatch.rs 启动期原地补丁（`"dsh:drives"` 哨兵盘符层 + 默认显示隐藏 + 哨兵面包屑/禁用打开） |
-| 图片附件 | 输入仅拖拽/剪贴板两条入口；host `dsh-attachment` 只认 png/jpeg/webp/gif（sharp 校验，3.5MB/图、20 图/条）→ 壳 mobile.js 注入附件按钮走合成 paste 复用该管线（文档类型上游不支持） |
-| 预设根 | composeProfile 把 agent-presets 行 roots 强制重写为 shipped root（`config/agent-presets/`）；`$DSH_HOME/.agent-presets` 用户根追加在后，同名 id shipped 优先 |
-| WebView2 下载 | 宿主不处理 DownloadStarting 即静默取消；wry 默认放行且抑制下载 UI → 壳 download.rs 显式接管 |
-| 许可证 | MIT（Copyright 2026 DeepSeek） |
-
-## 16. 远程访问（Quick Tunnel + 内嵌鉴权代理）
-
-托盘"远程访问"一键开启后，手机/异地浏览器凭带 token 的链接获得**完整 dsh Web UI**。零服务器、零账号、零配置：中继用 Cloudflare 免费 Quick Tunnel（`cloudflared.exe` 随 runtime 内嵌，匿名临时隧道，纯出站连接，无需公网 IP/端口映射/防火墙开口）。
-
-**链路**：
-
-```
-手机浏览器 ─HTTPS→ Cloudflare 边缘 ─→ cloudflared(桌面，纯出站)
-  → 127.0.0.1:<随机端口> remote::proxy(token 门岗)
-  → 127.0.0.1:<dsh端口>  dsh web（HTTP + /api/events.* WS）
-```
-
-**模块**（`src-tauri/src/remote/`）：
-
-- `mod.rs` — `RemoteManager`：生命周期（start/stop/status）、token 生成（每次 start 重新生成 256-bit hex）、6 个 invoke 命令（start_remote/stop_remote/get_remote_status/copy_remote_link/get_remote_qr/reset_remote_link）。隧道事件回调里拼链接 `link = {url}/?token={token}`；状态变更广播 `remote-status` 事件 + 更新托盘子菜单 enabled + events.log。`reset_link` 原地轮换 token 并掐断现有会话（链接泄露后的吊销手段），仅 Starting/Up 可用，隧道与域名不变。
-- `proxy.rs` — axum 反向代理，只绑 127.0.0.1。鉴权：有效 cookie `__dsh_remote` 直接转发；`?token=` 匹配（常数时间比较）→ 302 剥离 token + 种 HttpOnly cookie；token 不匹配 → 固定 500ms 延迟后 403；无凭据 → 403 门页。HTTP 经 reqwest 流式转发（3xx 透传不跟随）；WS upgrade 在代理终结握手后与 dsh 另建连接逐帧双向桥接。dsh 端口走 `watch::Receiver` 动态读取，dsh 重启代理不断线。**token 存共享单元（RwLock），门岗逐请求读最新值**——重置后旧链接/旧 cookie 即刻失效；**WS 桥接同时挂 drain Notify**（`enable()` 提前挂号防 connect 窗口期漏掐），重置/停服 `notify_waiters` 掐断所有已建立连接，否则泄露场景下攻击者已开的页面仍能持续收事件流。**转发必须剥掉浏览器标记头**（`origin`/`referer`/`sec-fetch-*`）：dsh 的 /api 信任栅栏（dsh-client-connection `isTrustedApiRequest`）要求 Origin.host == Host 头且拒绝 `sec-fetch-site: cross-site`，隧道场景 Origin 是 trycloudflare 域名，不剥则页面所有 RPC 调用全 403；剥掉后请求在 dsh 眼里是无 Origin 的 loopback 客户端（WS 桥接侧 tungstenite 握手本就不带 Origin，天然满足）。**转发客户端必须 `.no_proxy()`**——用户系统代理（Clash 等）否则会把 127.0.0.1 转发劫持走。**插件 bundle 改写**：`/plugins/*/client.js` 响应被缓冲（≤4MB、仅 identity 编码）并把 `connection.isLoopback ? "host" : "memory"` 全量替换为 `"host"`——dsh 内测声明（WelcomeNoticeStore）对非回环源选 memory 持久化，隧道域名下确认记录不落 settings.yaml 导致每次连接都弹；改写后远程端与桌面端共用 host 持久化（桌面本就已确认，远程直接不弹）。改写路径转发时剥 `accept-encoding`（求 identity）与条件请求头（防 304），响应剥 `content-length`/`etag`；needle 失配（dsh 改版换写法）静默原样透传，声明照弹但不破坏页面。**HTML 文档注入移动端适配（mobile.css + mobile.js）**：文档导航请求（accept 含 text/html）且响应确为 `text/html` 时，缓冲后往 `</head>` 前注入 `mobile.css` 与 `mobile.js`（编译期 `include_str!` 内嵌，注入点带 `<!-- dshdesktop-mobile -->` 标记）——dsh Web UI 未做手机适配，实测三处破版：设置弹窗左侧 188px 固定导航列把内容区压到一字一行竖排（全屏化 + 导航改顶部横向 tab 条修复）、narrow 模式展开侧栏占 280px 固定网格轨把主区压到 110px（轨道归零 + 侧栏内容溢出成抽屉修复）、输入区 trailing 组 `flex:0 0 auto` 把 + 按钮压到与模型名重叠（模型选择器图标化：隐藏型号/推理档位文案、mask+currentColor 补火花图标，型号在点开的二级菜单里选；触发器改静态定位把弹出菜单的包含块上移到输入卡片，修 right:0 右对齐导致的左越界裁切；回合统计行 ~460px 宽单行必截断——mobile.js 随同注入（dsh 无 CSP）：在会话页“对话/轨迹”旁加“信息”标签，点开把统计行克隆进全屏面板逐行展示（MutationObserver 跟随同步；克隆而非搬家——React 对被移走的节点 removeChild 必崩），打 data-dshmobile-enhanced 后隐藏输入区下方的原行，且标记跟随 matchMedia 断点（旋屏/拉窗离开 700px 即摘除恢复原行，防宽屏下标签被 CSS 隐藏、统计无处可见）；JS 失效或节点未命中时 CSS 兜底：隐藏 | 分隔符改弹性换行两行居中，信息全保留）。**附件按钮**：上游输入只有拖拽/剪贴板两条图片入口（`onPaste → intakeImages → createDraftImages → base64 → session.prompt`），手机浏览器一条都没有——mobile.js 另在输入卡片工具行"+"旁注入回形针按钮（类名克隆 "+" 的 28px 圆形款，禁用态跟随它），点击调起系统文件选择器，选完构造 `DataTransfer` 合成 `ClipboardEvent('paste')` 喂回上游粘贴管线（类型/数量/体积校验与报错 toast 全复用上游；host `admitEncodedImages` 经 sharp 只认 png/jpeg/webp/gif 四种位图，文档类型上游不支持，故 accept 只开图片）；共享 file input 惰性创建放 body（脚本注入点在 `</head>` 前、执行时 body 可能未出来，且必须在 React 树外），按钮被 React 重渲染抹掉时观察器按 DOM 缺席重挂，离开 700px 断点摘除）。断点 700px（桌面壳窗口最小宽 900px 永不命中，注入只影响经代理的远程访问）；选择器只锚语义钩子（`[role="dialog"]`、`data-sidebar-collapsed` 展开时属性不存在）与 CSS Modules 本地名子串（`[class*="_nav"]` 等，哈希前缀随版本变化不影响），上游改名则对应规则静默失效回到未适配状态。找不到 `</head>` 或非 HTML 一律原文透传。
-- `tunnel.rs` — `TunnelProcess` 监督（对齐 DshProcess 模式）：`cloudflared tunnel --url <代理地址> --no-autoupdate`，从 stdout 正则解析 `https://<rand>.trycloudflare.com`（60s 未出现视为失败），指数退避重启（隧道重连后**域名变、token 不变**），停止走 `kill_process_tree` + `kill_on_drop`。
-
-**安全模型**：链接即凭据（托盘/二维码页有"勿分享"提示）；token 每次开启重新生成，停止/退出应用即整体失效（quit 顺序：先 stop 远程访问再 stop dsh）；泄露时"重置链接"一键吊销（token 轮换 + 掐断现有会话，域名不变）。代理与 dsh 均不监听非 loopback。**token 不落日志**：events.log 只记 phase/url/error/proxy_port（不含链接），cloudflared 输出里的 `?token=` 查询串经 `redact_token` 脱敏；开启成功的 toast 正文不带链接（系统通知中心会留痕），只提示去托盘复制。已知取舍：链接不固定，手机端不能收藏复用（每次开启重新扫码），换"泄露窗口期最短"。
-
-**分发**：`fetch-runtime.ps1 -CloudflaredVersion`（默认见脚本）从 GitHub release 下载 `cloudflared-windows-amd64.exe`（ghproxy 兜底），落 `runtime/<triplet>/cloudflared.exe`，经既有 `resources: ["runtime"]` 打包与 `.version` 部署比对；缺失时 start 报 error 态（dev 的 fixture 运行时允许没有）。
-
-**UI**：托盘子菜单（开启/关闭互斥 enabled、复制链接、显示二维码、重置远程链接——复制/二维码/重置仅 Up 可用）+ `#/remote` 本地窗口（二维码 SVG 由 `qrcode` crate 生成、复制、重置（confirm 确认）、开关按钮）+ 诊断面板"远程访问"状态行。locale 切换重建托盘菜单后 `TrayRemoteItems` 句柄替换并按当前 phase 重设 enabled。
-
-**测试**：`tests/remote_proxy.rs`（门岗 403/302/种 cookie/转发/WS 桥接/503/shutdown 释放端口/插件 bundle 三元式改写/HTML 文档移动端样式与信息标签页脚本注入、无 </head> 透传）、`tests/remote_tunnel.rs`（fake-cloudflared.cjs：URL 解析、崩溃重启、stop）、`tests/remote_manager.rs`（缺 cloudflared 报 error、fixture dsh + 假隧道全链路 up→stop）。真隧道链路不进自动化（需外网），手动验收：托盘开启 → 手机扫码完整操作 dsh。
+**测试**：`tests/remote_proxy.rs`（门岗 403/302/种 cookie（含"无 Secure"断言）/转发/WS 桥接/503/shutdown 释放端口/插件 bundle 三元式改写/HTML 文档移动端样式与信息标签页脚本注入、无 </head> 透传）、`tests/remote_manager.rs`（端口占用报错、fixture dsh + 固定端口全链路 up→stop、改配置下次生效、重置轮换 token 端口不变、SSH 隧道 up 后链接用服务器地址、SSH 失败（fake-ssh 打 Permission denied）转 error 透出错误）、`remote/ssh_tunnel.rs` 单元测试锚定命令行形态（BatchMode/ExitOnForwardFailure/-R 0.0.0.0:port:…）。局域网真机与真实 SSH 服务器链路不进自动化，手动验收：局域网 → 托盘开启 → 手机连同一 Wi-Fi 扫码；SSH → 在设置填好服务器信息 → 托盘开启 → 异地浏览器打开 http://服务器:暴露端口。
 
 ## 17. 应用更新检查（update.rs）
 

@@ -5,8 +5,6 @@ use std::path::{Path, PathBuf};
 /// 并替换下面的 compile_error! 占位。
 pub trait Platform: Send + Sync {
     fn node_exe_name(&self) -> &'static str;
-    /// 远程访问隧道可执行文件名（随 runtime 内嵌分发）
-    fn cloudflared_exe_name(&self) -> &'static str;
     /// 应用数据根目录（Windows: %LOCALAPPDATA%\DSHDesktop）
     fn runtime_base_dir(&self) -> PathBuf;
     /// 安装包资源目录中内嵌运行时所在路径：<resource_dir>/runtime/<triplet>
@@ -24,6 +22,11 @@ pub trait Platform: Send + Sync {
     fn system_dark_mode(&self) -> bool;
     /// 系统 UI 语言是否中文（dsh locale.preference 缺省时用来解析，对齐 dsh 的"跟随浏览器"）
     fn system_prefers_chinese(&self) -> bool;
+    /// SSH 反向隧道用的 OpenSSH 客户端可执行文件（远程访问 SSH 模式）。
+    /// 默认 "ssh"（走 PATH）；Windows 优先探测系统自带路径。
+    fn ssh_client_exe(&self) -> PathBuf {
+        PathBuf::from("ssh")
+    }
     /// 异步播放一个 wav 文件（柔和完成提示音）；文件不存在/播放失败返回 Err
     fn play_sound_file(&self, path: &Path) -> Result<(), String>;
 }
@@ -53,7 +56,6 @@ mod tests {
     fn windows_platform_basics() {
         let p = current();
         assert_eq!(p.node_exe_name(), "node.exe");
-        assert_eq!(p.cloudflared_exe_name(), "cloudflared.exe");
         assert_eq!(p.runtime_triplet(), "windows-x64");
         assert!(p.runtime_base_dir().ends_with("DSHDesktop"));
         let r = p.resource_runtime_dir(Path::new("C:\\res"));

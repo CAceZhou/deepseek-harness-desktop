@@ -25,7 +25,7 @@
     return () => unlisten?.()
   })
 
-  // 链接变化（含隧道重连换新域名）时重新取二维码
+  // 链接变化（每次开启 token 都换新）时重新取二维码
   $effect(() => {
     const link = status?.link
     if (link) {
@@ -58,7 +58,7 @@
     }
   }
 
-  // 重置链接：token 原地轮换 + 掐断现有会话，隧道域名不变；旧链接/旧设备即刻失效
+  // 重置链接：token 原地轮换 + 掐断现有会话，端口不变；旧链接/旧设备即刻失效
   async function resetLink() {
     if (busy || !status) return
     if (!window.confirm(t('重置后当前链接与所有已连接的设备都会立即失效，确定重置？'))) return
@@ -97,7 +97,7 @@
         </div>
       {:else if status.phase === 'starting'}
         <p class="tip center">{t('正在开启远程访问…')}</p>
-        <p class="tip center dim">{t('首次开启需要几秒钟建立隧道')}</p>
+        <p class="tip center dim">{t('请确保手机与电脑连接同一网络')}</p>
         <div class="actions">
           <button onclick={toggle} disabled={busy}>{t('关闭远程访问')}</button>
         </div>
@@ -113,7 +113,9 @@
     </section>
     <p class="tip warnline">{t('链接即凭据，请勿分享给他人')}</p>
     <p class="tip dim">{t('每次开启都会生成新链接，旧链接即刻失效')}</p>
-    <p class="tip dim">{t('链接泄露时点“重置链接”立即吊销，隧道域名不变')}</p>
+    <p class="tip dim">{t('链接泄露时点“重置链接”立即吊销，端口不变')}</p>
+    <p class="tip dim">{t('若手机无法访问，请检查 Windows 防火墙是否放行 DSHDesktop 与该端口')}</p>
+    <p class="tip dim">{t('SSH 隧道模式下链接为 http://服务器地址:暴露端口，需服务器在线且允许远程转发')}</p>
   {/if}
 </main>
 

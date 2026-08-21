@@ -357,9 +357,6 @@ pub fn run() {
             theme::spawn_theme_follower(&handle, platform.clone(), paths.home.clone());
             let emit_handle = handle.clone();
             let nav_home = home_url.clone();
-            // 远程访问用的运行时信息（paths 随后被 SharedState 取走，先克隆出来）
-            let cloudflared_exe = paths.cloudflared_exe.clone();
-            let remote_work_dir = paths.work_dir.clone();
             let remote_log = paths
                 .home
                 .parent()
@@ -423,15 +420,28 @@ pub fn run() {
                 home_url,
                 first_launch,
             });
-            // 远程访问管理器：托盘/命令驱动 start/stop；状态变更广播给前端并记事件日志
+            // 远程访问管理器：托盘/命令驱动 start/stop；状态变更广播给前端并记事件日志。
+            // 运行配置（固定端口 + SSH 隧道）从设置读取初值，保存设置时经
+            // RemoteConfig 通道更新（改配置无需重启应用）
+            let remote_cfg_rx = {
+                let settings = handle.state::<settings::SettingsState>();
+                let s = settings.get();
+                let (tx, rx) = watch::channel(remote::RemoteSettings {
+                    port: s.remote_port,
+                    ssh: s.ssh_tunnel.clone(),
+                });
+                handle.manage(remote::RemoteConfig(tx));
+                rx
+            };
             handle.manage(remote::RemoteManager::new(
                 platform.clone(),
-                cloudflared_exe,
+                platform.ssh_client_exe(),
                 vec![],
-                remote_work_dir,
+                platform.runtime_base_dir(),
+                remote_cfg_rx,
                 port_rx,
                 Box::new(move |ev| match ev {
-                    // 链接即凭据：日志只记非敏感字段，隧道输出过 token 脱敏
+                    // 链接即凭据：日志只记非敏感字段，任何 token 查询串一律脱敏
                     remote::RemoteEvent::Log(l) => {
                         append_debug_line(&remote_log, &remote::redact_token(&l))
                     }

@@ -5,6 +5,8 @@ use tauri::Manager;
 
 pub const STEP_MIN: f64 = 0.01;
 pub const STEP_MAX: f64 = 0.25;
+/// 远程访问固定端口默认值（0.0.0.0 全接口监听，局域网内访问）
+pub const REMOTE_PORT_DEFAULT: u16 = 7788;
 const FILE_NAME: &str = "settings.json";
 
 fn step_default() -> f64 {
@@ -123,6 +125,58 @@ pub struct NotifySettings {
     pub turn_done: NotifyRule,
 }
 
+/// SSH 反向隧道配置：把本地鉴权代理的固定端口经 SSH -R 转发到自建公网服务器，
+/// 公网/异地凭 `http://<server>:<expose_port>` 访问。私钥鉴权（OpenSSH 格式）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SshTunnelSettings {
+    /// 开启 SSH 隧道（enabled 时 server/user/key_path 必填、端口必须合法）
+    pub enabled: bool,
+    /// 目标服务器地址（IP 或域名，可带 http(s):// 前缀）；SSH 模式下生成链接的
+    /// 地址与此一致，协议也跟随前缀（https:// → 生成 https 链接）
+    pub server: String,
+    /// 服务器 SSH 端口（默认 22）
+    pub ssh_port: u16,
+    /// SSH 登录用户名
+    pub user: String,
+    /// 鉴权私钥文件路径（OpenSSH 格式，无口令或经 ssh-agent）
+    pub key_path: String,
+    /// 服务器上暴露的端口（反向转发目标端口，SSH -R 实际绑定的端口）
+    pub expose_port: u16,
+    /// 生成访问链接时覆盖的端口号：0 = 跟随 expose_port；非 0 = 链接用它。
+    /// 供自建服务器上用反向代理（Nginx/Caddy 等）对外公布、对外端口 ≠ 转发端口的场景。
+    pub link_port: u16,
+}
+
+impl Default for SshTunnelSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: String::new(),
+            ssh_port: 22,
+            user: String::new(),
+            key_path: String::new(),
+            expose_port: 0,
+            link_port: 0,
+        }
+    }
+}
+
+impl SshTunnelSettings {
+    /// enabled 时配置是否可用的校验：server/user/key 非空，SSH 端口与暴露端口在 1..=65535。
+    /// link_port 是 u16：0 = 跟随暴露端口，非 0 必在 1..=65535，无需额外校验。
+    pub fn valid(&self) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        !self.server.trim().is_empty()
+            && !self.user.trim().is_empty()
+            && !self.key_path.trim().is_empty()
+            && (1..=65535).contains(&self.ssh_port)
+            && (1..=65535).contains(&self.expose_port)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellSettings {
@@ -134,6 +188,10 @@ pub struct ShellSettings {
     pub completion_sound: CompletionSound,
     /// 启动时自动检查更新（默认关）：开启后每次启动后台查 GitHub releases，有新版弹 toast
     pub check_update_on_launch: bool,
+    /// 远程访问固定端口（默认 7788）：0 视作默认（load/set 时归一化）
+    pub remote_port: u16,
+    /// SSH 反向隧道配置（内网穿透到自建公网服务器）
+    pub ssh_tunnel: SshTunnelSettings,
     /// 旧版字段（≤0.1.7）：读取时迁移进 notify.turn_done.enabled，保存时不再写出
     #[serde(skip_serializing)]
     notify_on_completion: Option<bool>,
@@ -161,6 +219,8 @@ impl Default for ShellSettings {
             notify: NotifySettings::default(),
             completion_sound: CompletionSound::Default,
             check_update_on_launch: false,
+            remote_port: REMOTE_PORT_DEFAULT,
+            ssh_tunnel: SshTunnelSettings::default(),
             notify_on_completion: None,
         }
     }
@@ -183,6 +243,16 @@ impl ShellSettings {
             s.notify.turn_done.enabled = b;
         }
         s.zoom_step = s.zoom_step.clamp(STEP_MIN, STEP_MAX);
+        if s.remote_port == 0 {
+            s.remote_port = REMOTE_PORT_DEFAULT;
+        }
+        if s.ssh_tunnel.ssh_port == 0 {
+            s.ssh_tunnel.ssh_port = 22;
+        }
+        // SSH 配置不合法（如被手改成半截）：整体回退默认（关），不拖垮其它设置
+        if !s.ssh_tunnel.valid() {
+            s.ssh_tunnel = SshTunnelSettings::default();
+        }
         if s.validate().is_err() {
             // 配置文件被手改成非法（无修饰键/快捷键冲突）：回退默认，别带着坏状态跑
             return Self::default();
@@ -218,6 +288,14 @@ impl ShellSettings {
             )
             .into());
         }
+        // SSH 隧道开启时必填项检查（端口越界、字段为空都拒收）
+        if !self.ssh_tunnel.valid() {
+            return Err(crate::i18n::pick(
+                "SSH 隧道配置不完整：服务器地址、用户名、私钥路径必填，SSH 端口与暴露端口需在 1-65535",
+                "SSH tunnel config incomplete: server, user and key path are required, and SSH/expose ports must be 1-65535",
+            )
+            .into());
+        }
         Ok(())
     }
 }
@@ -243,6 +321,12 @@ impl SettingsState {
 
     pub fn set(&self, mut s: ShellSettings) -> Result<(), String> {
         s.zoom_step = s.zoom_step.clamp(STEP_MIN, STEP_MAX);
+        if s.remote_port == 0 {
+            s.remote_port = REMOTE_PORT_DEFAULT;
+        }
+        if s.ssh_tunnel.ssh_port == 0 {
+            s.ssh_tunnel.ssh_port = 22;
+        }
         s.validate()?;
         s.save(&self.dir).map_err(|e| {
             crate::i18n::pick(
@@ -261,7 +345,9 @@ pub fn get_shell_settings(state: tauri::State<SettingsState>) -> ShellSettings {
 }
 
 /// 保存设置；成功后重注入主窗口的缩放钩子（快捷键定义内嵌在脚本里，
-/// 必须重注入才生效；钩子内部热替换监听器，不会叠加）
+/// 必须重注入才生效；钩子内部热替换监听器，不会叠加）；
+/// 远程访问运行配置（固定端口 + SSH 隧道）同步进 RemoteConfig 通道——
+/// RemoteManager 下次 start 即用新配置（无需重启应用）
 #[tauri::command]
 pub fn set_shell_settings(
     app: tauri::AppHandle,
@@ -269,6 +355,13 @@ pub fn set_shell_settings(
     next: ShellSettings,
 ) -> Result<(), String> {
     state.set(next)?;
+    if let Some(cfg) = app.try_state::<crate::remote::RemoteConfig>() {
+        let s = state.get();
+        let _ = cfg.0.send(crate::remote::RemoteSettings {
+            port: s.remote_port,
+            ssh: s.ssh_tunnel.clone(),
+        });
+    }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.eval(crate::zoom::hook_js(&state.get()));
     }
@@ -329,6 +422,96 @@ mod tests {
         let s = ShellSettings::load(dir.path());
         assert!((s.zoom_step - 0.05).abs() < 1e-9);
         assert_eq!(s.zoom_in.code, "Equal"); // 未提供的字段回退默认
+        assert_eq!(s.remote_port, REMOTE_PORT_DEFAULT, "未提供的端口回退默认 7788");
+    }
+
+    #[test]
+    fn remote_port_zero_normalizes_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        // 0 或缺失 → 默认 7788；合法值原样保留并往返
+        std::fs::write(dir.path().join("settings.json"), r#"{ "remote_port": 0 }"#).unwrap();
+        assert_eq!(ShellSettings::load(dir.path()).remote_port, REMOTE_PORT_DEFAULT);
+        let mut s = ShellSettings::default();
+        s.remote_port = 8000;
+        s.save(dir.path()).unwrap();
+        assert_eq!(ShellSettings::load(dir.path()).remote_port, 8000);
+        // set 同样归一化 0 → 默认
+        let st = SettingsState::new(dir.path().to_path_buf());
+        let mut bad = st.get();
+        bad.remote_port = 0;
+        st.set(bad).unwrap();
+        assert_eq!(st.get().remote_port, REMOTE_PORT_DEFAULT);
+    }
+
+    #[test]
+    fn ssh_tunnel_defaults_off_and_validity_matrix() {
+        let d = SshTunnelSettings::default();
+        assert!(!d.enabled);
+        assert!(d.valid(), "未开启时不需要填任何字段");
+        assert_eq!(d.ssh_port, 22);
+
+        // enabled 时必填项与端口范围
+        let mut s = SshTunnelSettings {
+            enabled: true,
+            server: "1.2.3.4".into(),
+            ssh_port: 22,
+            user: "root".into(),
+            key_path: r"C:\keys\id_ed25519".into(),
+            expose_port: 8080,
+            link_port: 0,
+        };
+        assert!(s.valid());
+        s.server.clear();
+        assert!(!s.valid(), "缺服务器地址");
+        s.server = "1.2.3.4".into();
+        s.user.clear();
+        assert!(!s.valid(), "缺用户名");
+        s.user = "root".into();
+        s.key_path.clear();
+        assert!(!s.valid(), "缺私钥路径");
+        s.key_path = r"C:\keys\id_ed25519".into();
+        s.expose_port = 0;
+        assert!(!s.valid(), "暴露端口 0 非法");
+        s.expose_port = 8080;
+        assert!(s.valid(), "link_port=0 跟随暴露端口，配置仍合法");
+        s.link_port = 8443;
+        assert!(s.valid(), "link_port 覆盖值无需额外校验");
+    }
+
+    #[test]
+    fn ssh_tunnel_roundtrip_and_invalid_load_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = ShellSettings::default();
+        s.ssh_tunnel = SshTunnelSettings {
+            enabled: true,
+            server: "vps.example.com".into(),
+            ssh_port: 2222,
+            user: "deploy".into(),
+            key_path: r"C:\Users\me\.ssh\id_ed25519".into(),
+            expose_port: 8080,
+            link_port: 8443,
+        };
+        s.save(dir.path()).unwrap();
+        let s2 = ShellSettings::load(dir.path());
+        assert_eq!(s2.ssh_tunnel, s.ssh_tunnel, "SSH 配置应完整往返");
+
+        // 半截配置（缺用户名）→ load 整体回退默认（关），不拖垮其它设置
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "zoom_step": 0.05, "ssh_tunnel": { "enabled": true, "server": "1.2.3.4", "ssh_port": 22, "key_path": "k", "expose_port": 8080 } }"#,
+        )
+        .unwrap();
+        let s3 = ShellSettings::load(dir.path());
+        assert!(s3.ssh_tunnel == SshTunnelSettings::default(), "非法 SSH 配置应回退默认");
+        assert!((s3.zoom_step - 0.05).abs() < 1e-9, "其它设置不受影响");
+
+        // set 校验拒绝非法 SSH 配置（enabled 但缺字段）
+        let st = SettingsState::new(dir.path().to_path_buf());
+        let mut bad = st.get();
+        bad.ssh_tunnel.enabled = true;
+        bad.ssh_tunnel.user.clear();
+        assert!(st.set(bad).is_err());
+        assert!(!st.get().ssh_tunnel.enabled, "非法配置不得替换内存值");
     }
 
     #[test]

@@ -138,6 +138,12 @@ async fn gate_requires_token() {
         "应种 cookie，实际 {set_cookie}"
     );
     assert!(set_cookie.contains("HttpOnly"), "cookie 应 HttpOnly");
+    // 局域网直连是明文 HTTP：Secure 属性会让浏览器拒存 cookie、鉴权整链断掉，
+    // 必须不带（鉴权逻辑不变，只是传输层从 HTTPS 隧道换成局域网 HTTP）
+    assert!(
+        !set_cookie.contains("Secure"),
+        "明文 HTTP 下 cookie 不能带 Secure：{set_cookie}"
+    );
 
     // 4. 带 cookie → 200 且转发到 dsh
     let r = http
@@ -168,9 +174,10 @@ async fn dsh_down_returns_503() {
 }
 
 /// 真实 dsh 有浏览器信任栅栏：/api 请求若 Origin.host ≠ Host 头（或
-/// sec-fetch-site: cross-site）→ 403。经隧道远程访问时浏览器带的是
-/// trycloudflare 域名的 Origin，代理转发前必须剥掉这些浏览器标记头，
-/// 否则页面上所有 RPC 调用（agentPreset.list/settings.describe/…）全 403。
+/// sec-fetch-site: cross-site）→ 403。经局域网/隧道远程访问时浏览器带的是
+/// http://<局域网IP>:<端口>（或 trycloudflare）域名的 Origin，代理转发前必须
+/// 剥掉这些浏览器标记头，否则页面上所有 RPC 调用（agentPreset.list/
+/// settings.describe/…）全 403。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forward_strips_browser_marker_headers() {
     let dsh_port = free_port().unwrap();
@@ -193,9 +200,9 @@ async fn forward_strips_browser_marker_headers() {
         .post(format!("{base}/api/agentPreset.list"))
         .header("cookie", format!("{COOKIE_NAME}={token}"))
         .header("content-type", "application/json")
-        // 模拟经隧道访问的浏览器：同源 POST 自动带 Origin/Referer/Sec-Fetch-*
-        .header("origin", "https://random-sub.trycloudflare.com")
-        .header("referer", "https://random-sub.trycloudflare.com/")
+        // 模拟经局域网访问的浏览器：同源 POST 自动带 Origin/Referer/Sec-Fetch-*
+        .header("origin", "http://192.168.1.5:7788")
+        .header("referer", "http://192.168.1.5:7788/")
         .header("sec-fetch-site", "same-origin")
         .header("sec-fetch-mode", "cors")
         .header("sec-fetch-dest", "empty")
@@ -206,7 +213,7 @@ async fn forward_strips_browser_marker_headers() {
     assert_eq!(
         r.status(),
         200,
-        "带隧道 Origin 的 RPC 经代理后不应触发 dsh 栅栏，实际 {:?}",
+        "带局域网 Origin 的 RPC 经代理后不应触发 dsh 栅栏，实际 {:?}",
         r.status()
     );
 
@@ -268,8 +275,8 @@ async fn ws_rejected_without_cookie() {
     proxy.shutdown().await;
 }
 
-/// 远程访问的页面源是隧道域名（非 loopback），dsh 的“内测声明”因此用内存
-/// 确认、每次访问都弹窗。代理把插件 bundle 里的持久化选择三元式
+/// 远程访问的页面源是局域网地址/隧道域名（非 loopback），dsh 的“内测声明”
+/// 因此用内存确认、每次访问都弹窗。代理把插件 bundle 里的持久化选择三元式
 /// `isLoopback ? "host" : "memory"` 改写为 `"host"`，确认落 settings.yaml。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rewrites_welcome_notice_persistence_in_plugin_bundle() {
@@ -393,6 +400,26 @@ async fn injects_mobile_css_into_html_documents() {
     assert!(
         body.find("<!-- dshdesktop-mobile -->").unwrap() < body.find("</head>").unwrap(),
         "样式应注入到 </head> 之前"
+    );
+    // secure-context polyfill：非 HTTPS 局域网下 crypto.randomUUID 缺失会导致 dsh
+    // 前端崩溃（工作区不显示）；polyfill 必须注入在 <head> 开头、早于一切 dsh 脚本
+    assert!(
+        body.contains("randomUUID"),
+        "应注入 randomUUID polyfill：{body}"
+    );
+    assert!(
+        body.find("randomUUID").unwrap() > body.find("<head").unwrap(),
+        "polyfill 应位于 <head> 内：{body}"
+    );
+    let head_pos = body.find("<head").unwrap();
+    assert!(
+        body[head_pos..].find("randomUUID").unwrap()
+            < body[head_pos..].find("</head>").unwrap(),
+        "polyfill 应在 </head> 之前"
+    );
+    assert!(
+        body.find("randomUUID").unwrap() < body.find("<!-- dshdesktop-mobile -->").unwrap(),
+        "polyfill 应先于移动端注入（保证最早执行）：{body}"
     );
 
     // 2. 无 </head> 的 HTML：原文透传

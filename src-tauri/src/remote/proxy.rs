@@ -32,9 +32,9 @@ const GATE_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><tit
 <p>DSHDesktop 远程访问：链接无效或已过期。<br>请在电脑托盘菜单重新生成链接。</p></body></html>";
 
 /// 内测声明三元式 needle 已上移 crate::upstream::WELCOME_NOTICE_NEEDLE（单一事实源，
-/// 含为何须带 `connection.` 前缀的说明）。改写语义：隧道场景 dsh 选 "memory" 持久化，
-/// 确认记录不落 settings.yaml、每次连接都弹声明；改写为 "host" 后远程端与桌面端
-/// 共用同一份持久化确认（桌面是回环源本就已写 host）。
+/// 含为何须带 `connection.` 前缀的说明）。改写语义：非回环访问（局域网/隧道）dsh 选
+/// "memory" 持久化，确认记录不落 settings.yaml、每次连接都弹声明；改写为 "host" 后
+/// 远程端与桌面端共用同一份持久化确认（桌面是回环源本就已写 host）。
 const WELCOME_NOTICE_REPL: &[u8] = br#""host""#;
 /// 只对不超过该体积的插件 bundle 做缓冲改写，超出原样透传（声明照弹，不破坏功能）
 const REWRITE_BUFFER_LIMIT: u64 = 4 * 1024 * 1024;
@@ -50,6 +50,58 @@ const MOBILE_CSS: &str = include_str!("mobile.css");
 const MOBILE_JS: &str = include_str!("mobile.js");
 /// 注入标记：测试断言与排查时识别（注释节点，无渲染影响）
 const MOBILE_INJECT_MARKER: &str = "<!-- dshdesktop-mobile -->";
+
+/// secure-context polyfill：局域网链路是明文 HTTP（非 secure context），而 dsh
+/// 前端（dsh-client-connection 的 createMessage 等）依赖 `crypto.randomUUID()`——
+/// 它只在 secure context（HTTPS/localhost）下存在，HTTP 局域网下 undefined，
+/// 一建消息/会话就抛 "crypto.randomUUID is not a function"，远程端整个界面崩掉
+/// （0.1.19 换掉 HTTPS 隧道后回归即此因）。`crypto.getRandomValues` 非 secure
+/// context 可用，用它实现 RFC 4122 v4。`navigator.clipboard` 同理补 writeText
+/// （execCommand 兜底，失败仅复制不可用）。只经代理注入，桌面本机访问
+/// 127.0.0.1（本就是 secure context）不受影响；dsh 上游自带 polyfill 后此块失效
+/// 无害。必须注入到 <head> 开头：dsh 脚本全是 module（defer，文档解析完才执行），
+/// 内联同步脚本先跑即可兜住；放到 head 开头最稳（含可能的同步脚本）。
+const SECURE_CONTEXT_POLYFILL: &str = r#"(function () {
+  'use strict';
+  var c = window.crypto;
+  if (c && typeof c.randomUUID !== 'function' && typeof c.getRandomValues === 'function') {
+    c.randomUUID = function () {
+      var b = c.getRandomValues(new Uint8Array(16));
+      b[6] = (b[6] & 0x0f) | 0x40;
+      b[8] = (b[8] & 0x3f) | 0x80;
+      var h = '';
+      for (var i = 0; i < 16; i++) {
+        var x = b[i].toString(16);
+        if (x.length === 1) x = '0' + x;
+        h += x;
+      }
+      return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+    };
+  }
+  if (typeof navigator !== 'undefined' && navigator.clipboard === undefined) {
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: function (text) {
+            var ta = document.createElement('textarea');
+            ta.value = String(text);
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            var ok = false;
+            try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+            document.body.removeChild(ta);
+            return ok ? Promise.resolve() : Promise.reject(new Error('copy unavailable'));
+          },
+          readText: function () { return Promise.reject(new Error('clipboard read unavailable')); }
+        }
+      });
+    } catch (e) {}
+  }
+})();"#;
 
 /// 插件客户端 bundle 路径：/plugins/<id>/client.js[?rev=N]
 fn is_plugin_client_bundle(path_and_query: &str) -> bool {
@@ -167,7 +219,10 @@ async fn handler(State(st): State<ProxyState>, req: Request) -> Response {
     match (cookie_ok, query_token) {
         (true, _) => {} // 已持 cookie：放行（旧链接里的过期 token 不影响）
         (false, Some(t)) if token_eq(&t, &current_token) => {
-            // 302 剥离 token + 种 cookie；浏览器地址栏不留凭据
+            // 302 剥离 token + 种 cookie；浏览器地址栏不留凭据。
+            // 注意不带 Secure：局域网直连是明文 HTTP，Secure cookie 浏览器在 http 下
+            // 不存不发，带上整条鉴权链会断。token 本身就是链接凭据，明文网络的暴露
+            // 窗口靠"局域网信任 + 每次开启轮换 + 泄露即重置吊销"兜底（见 design 文档）
             let location = strip_token_query(&path_and_query);
             return (
                 StatusCode::FOUND,
@@ -175,7 +230,7 @@ async fn handler(State(st): State<ProxyState>, req: Request) -> Response {
                     (header::LOCATION, location),
                     (
                         header::SET_COOKIE,
-                        format!("{COOKIE_NAME}={t}; HttpOnly; Secure; SameSite=Lax; Path=/"),
+                        format!("{COOKIE_NAME}={t}; HttpOnly; SameSite=Lax; Path=/"),
                     ),
                 ],
             )
@@ -209,8 +264,9 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
         // host/content-length 由 reqwest 按目标与 body 重算；逐跳头不透传。
         // origin/referer/sec-fetch-* 必须剥掉：dsh 有浏览器信任栅栏
         // （dsh-client-connection isTrustedApiRequest），Origin.host ≠ Host 头
-        // 或 sec-fetch-site: cross-site 的 /api 请求一律 403。经隧道访问时浏览器
-        // 带的是 trycloudflare 域名的 Origin，不剥则页面所有 RPC 调用全灭。
+        // 或 sec-fetch-site: cross-site 的 /api 请求一律 403。经局域网/隧道访问时
+        // 浏览器带的是 http://<局域网IP>:<端口> 或 trycloudflare 域名的 Origin，
+        // 不剥则页面所有 RPC 调用全灭。
         // 剥掉后请求在 dsh 眼里是无 Origin 的 loopback 客户端，合法放行。
         if matches!(
             name.as_str(),
@@ -326,25 +382,63 @@ fn buffered_builder(res: &reqwest::Response) -> axum::http::response::Builder {
     builder
 }
 
-/// 缓冲 HTML 文档并往 </head> 前注入移动端适配样式与信息标签页脚本；找不到
-/// </head> 原样返回（dsh 改版换了文档结构就静默失效，页面回到未适配状态但
-/// 不破坏功能）。
+/// 找 `<head …>` 的开始标签结束位置（'<' + head + 空白或 '>' 后第一个 '>'）；
+/// 排除 <header/<headless 等前缀撞名。找不到返回 None（调用方退到 </head> 前）。
+fn find_head_open_end(bytes: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + 5 <= bytes.len() {
+        if bytes[i] == b'<' && bytes[i + 1..i + 5].eq_ignore_ascii_case(b"head") {
+            let after = i + 5;
+            if after < bytes.len()
+                && (bytes[after] == b'>' || bytes[after].is_ascii_whitespace())
+            {
+                return bytes[after..]
+                    .iter()
+                    .position(|&b| b == b'>')
+                    .map(|gt| after + gt + 1);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 缓冲 HTML 文档：<head> 开头注入 secure-context polyfill，</head> 前注入移动端
+/// 适配样式与信息标签页脚本；找不到 </head> 原样返回（dsh 改版换了文档结构就
+/// 静默失效，页面回到未适配状态但不破坏功能）。
 async fn rewrite_html_document(res: reqwest::Response) -> Response {
     let builder = buffered_builder(&res);
     match res.bytes().await {
         Ok(bytes) if bytes.len() as u64 <= REWRITE_BUFFER_LIMIT => {
             let body = match find_subslice_ci(&bytes, b"</head>") {
-                Some(pos) => {
-                    let mut out =
-                        Vec::with_capacity(bytes.len() + MOBILE_CSS.len() + MOBILE_JS.len() + 96);
-                    out.extend_from_slice(&bytes[..pos]);
+                Some(head_end) => {
+                    let mut out = Vec::with_capacity(
+                        bytes.len() + SECURE_CONTEXT_POLYFILL.len() + MOBILE_CSS.len() + MOBILE_JS.len() + 160,
+                    );
+                    match find_head_open_end(&bytes) {
+                        Some(pos) => {
+                            out.extend_from_slice(&bytes[..pos]);
+                            out.extend_from_slice(b"<script>");
+                            out.extend_from_slice(SECURE_CONTEXT_POLYFILL.as_bytes());
+                            out.extend_from_slice(b"</script>");
+                            out.extend_from_slice(&bytes[pos..head_end]);
+                        }
+                        None => {
+                            // 找不到 <head>：退到 </head> 前（内联同步脚本仍先于
+                            // module/defer 脚本执行，兜底可用）
+                            out.extend_from_slice(&bytes[..head_end]);
+                            out.extend_from_slice(b"<script>");
+                            out.extend_from_slice(SECURE_CONTEXT_POLYFILL.as_bytes());
+                            out.extend_from_slice(b"</script>");
+                        }
+                    }
                     out.extend_from_slice(MOBILE_INJECT_MARKER.as_bytes());
                     out.extend_from_slice(b"<style>");
                     out.extend_from_slice(MOBILE_CSS.as_bytes());
                     out.extend_from_slice(b"</style><script>");
                     out.extend_from_slice(MOBILE_JS.as_bytes());
                     out.extend_from_slice(b"</script>");
-                    out.extend_from_slice(&bytes[pos..]);
+                    out.extend_from_slice(&bytes[head_end..]);
                     out
                 }
                 None => bytes.to_vec(),

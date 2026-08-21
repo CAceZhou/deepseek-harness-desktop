@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 /// Job Object 回收：把子进程挂进带 KILL_ON_JOB_CLOSE 的 Job，本进程以任何方式
 /// 退出（含被 NSIS 安装器/任务管理器强杀）时，内核在最后句柄回收时连带终止所有
-/// 成员。不修这个，dsh 的 node.exe / cloudflared.exe 会以孤儿存活并锁住
+/// 成员。不修这个，dsh 的 node.exe / pnpm 等子进程会以孤儿存活并锁住
 /// runtime 目录，导致卸载重装写文件失败。
 pub(crate) mod job {
     use std::sync::OnceLock;
@@ -77,10 +77,6 @@ impl Platform for WindowsPlatform {
         "node.exe"
     }
 
-    fn cloudflared_exe_name(&self) -> &'static str {
-        "cloudflared.exe"
-    }
-
     fn runtime_base_dir(&self) -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -130,6 +126,16 @@ impl Platform for WindowsPlatform {
         const LANG_CHINESE: u16 = 0x04;
         let lang = unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() };
         lang & 0x3FF == LANG_CHINESE
+    }
+
+    fn ssh_client_exe(&self) -> PathBuf {
+        // Win10 1809+ 系统自带 OpenSSH 客户端；探测不到退回 PATH 里的 ssh
+        let sys = Path::new(r"C:\Windows\System32\OpenSSH\ssh.exe");
+        if sys.is_file() {
+            sys.to_path_buf()
+        } else {
+            PathBuf::from("ssh")
+        }
     }
 
     fn play_sound_file(&self, path: &Path) -> Result<(), String> {

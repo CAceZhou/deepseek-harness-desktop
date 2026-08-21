@@ -426,7 +426,7 @@ pub(crate) fn quit_app(app: &AppHandle) {
     let remote = app.try_state::<RemoteManager>().map(|s| s.inner().clone());
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        // 先关远程访问（杀 cloudflared 进程树 + 停鉴权代理），链接即刻失效
+        // 先关远程访问（停鉴权代理，关闭固定端口监听），链接即刻失效
         if let Some(rm) = remote {
             rm.stop().await;
         }

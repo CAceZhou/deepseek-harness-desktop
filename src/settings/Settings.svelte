@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { getVersion } from '@tauri-apps/api/app'
+  import { open } from '@tauri-apps/plugin-dialog'
   import { onMount } from 'svelte'
   import { t } from '../i18n'
 
@@ -11,6 +12,16 @@
   type NotifyRule = { enabled: boolean; timing: NotifyTiming }
   // 与 Rust 端 NotifySettings 对应：approval=任务确认 question=选项选择 turn_done=任务完成
   type NotifySettings = { approval: NotifyRule; question: NotifyRule; turn_done: NotifyRule }
+  // 与 Rust 端 SshTunnelSettings 对应
+  type SshTunnelSettings = {
+    enabled: boolean
+    server: string
+    ssh_port: number
+    user: string
+    key_path: string
+    expose_port: number
+    link_port: number
+  }
   type ShellSettings = {
     zoom_step: number
     zoom_in: Shortcut
@@ -19,6 +30,8 @@
     notify: NotifySettings
     completion_sound: CompletionSound
     check_update_on_launch: boolean
+    remote_port: number
+    ssh_tunnel: SshTunnelSettings
   }
   // 与 Rust 端 update::UpdateInfo 对应
   type UpdateInfo = {
@@ -31,6 +44,15 @@
 
   // 与 Rust 端 ShellSettings::default 保持一致（三类通知默认均开、仅后台时提醒）
   const DEFAULT_RULE: NotifyRule = { enabled: true, timing: 'background' }
+  const DEFAULT_SSH: SshTunnelSettings = {
+    enabled: false,
+    server: '',
+    ssh_port: 22,
+    user: '',
+    key_path: '',
+    expose_port: 0,
+    link_port: 0,
+  }
   const DEFAULTS: ShellSettings = {
     zoom_step: 0.02,
     zoom_in: { ctrl: true, shift: true, alt: false, code: 'Equal', key: '+' },
@@ -39,6 +61,8 @@
     notify: { approval: { ...DEFAULT_RULE }, question: { ...DEFAULT_RULE }, turn_done: { ...DEFAULT_RULE } },
     completion_sound: 'default',
     check_update_on_launch: false,
+    remote_port: 7788,
+    ssh_tunnel: { ...DEFAULT_SSH },
   }
 
   // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
@@ -69,6 +93,8 @@
   let completionSound = $state<CompletionSound>('default')
   let autostart = $state(false)
   let checkOnLaunch = $state(false)
+  let remotePort = $state(7788)
+  let sshTunnel = $state<SshTunnelSettings>({ ...DEFAULT_SSH })
   let recording = $state<'in' | 'out' | null>(null)
   let saving = $state(false)
   let notice = $state<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -117,6 +143,8 @@
     notify = structuredClone(s.notify)
     completionSound = s.completion_sound
     checkOnLaunch = s.check_update_on_launch
+    remotePort = s.remote_port
+    sshTunnel = { ...s.ssh_tunnel }
   }
 
   const CODE_LABELS: Record<string, string> = {
@@ -170,7 +198,32 @@
       }
     }
     if (sameShortcut(zoomIn, zoomOut)) return t('放大与缩小快捷键不能相同')
+    // SSH 隧道开启时必填项与端口范围（与 Rust 端 SshTunnelSettings::valid 对齐）
+    if (sshTunnel.enabled) {
+      if (!sshTunnel.server.trim() || !sshTunnel.user.trim() || !sshTunnel.key_path.trim()) {
+        return t('SSH 隧道配置不完整：服务器地址、用户名、私钥路径必填')
+      }
+      const sp = Math.round(sshTunnel.ssh_port)
+      const ep = Math.round(sshTunnel.expose_port)
+      const lp = Math.round(sshTunnel.link_port || 0)
+      if (!(sp >= 1 && sp <= 65535) || !(ep >= 1 && ep <= 65535)) {
+        return t('SSH 端口与暴露端口需在 1-65535')
+      }
+      if (lp !== 0 && !(lp >= 1 && lp <= 65535)) {
+        return t('链接端口需在 1-65535 或留空')
+      }
+    }
     return null
+  }
+
+  // 选择私钥文件（OpenSSH 格式）
+  async function pickSshKey() {
+    try {
+      const picked = await open({ multiple: false, directory: false, title: t('选择 SSH 私钥文件') })
+      if (typeof picked === 'string') sshTunnel.key_path = picked
+    } catch {
+      // 用户取消/对话框失败：保持原值
+    }
   }
 
   async function save() {
@@ -190,6 +243,16 @@
         notify,
         completion_sound: completionSound,
         check_update_on_launch: checkOnLaunch,
+        remote_port: Math.min(Math.max(Math.round(remotePort || 7788), 1), 65535),
+        ssh_tunnel: {
+          enabled: sshTunnel.enabled,
+          server: sshTunnel.server.trim(),
+          ssh_port: Math.min(Math.max(Math.round(sshTunnel.ssh_port || 22), 1), 65535),
+          user: sshTunnel.user.trim(),
+          key_path: sshTunnel.key_path.trim(),
+          expose_port: Math.min(Math.max(Math.round(sshTunnel.expose_port), 1), 65535),
+          link_port: Math.min(Math.max(Math.round(sshTunnel.link_port || 0), 0), 65535),
+        },
       }
       await invoke('set_shell_settings', { next })
       await invoke('set_autostart', { enabled: autostart })
@@ -284,6 +347,64 @@
       <input type="radio" bind:group={closeBehavior} value="quit" />
       {t('退出程序')}
     </label>
+    <div class="divider"></div>
+    <div class="row">
+      <span>{t('远程访问端口')}</span>
+      <span class="control">
+        <input type="number" min="1" max="65535" bind:value={remotePort} />
+      </span>
+    </div>
+    <p class="hint">{t('手机与电脑需在同一网络，端口需在防火墙放行')}</p>
+  </section>
+
+  <section class="card">
+    <h2>{t('SSH 隧道（内网穿透）')}</h2>
+    <label class="check">
+      <input type="checkbox" bind:checked={sshTunnel.enabled} />
+      {t('通过自建公网服务器的 SSH 反向隧道访问')}
+    </label>
+    <div class="divider"></div>
+    {#if sshTunnel.enabled}
+      <div class="row">
+        <span>{t('服务器地址')}</span>
+        <span class="control wide">
+          <input type="text" placeholder="vps.example.com" bind:value={sshTunnel.server} />
+        </span>
+      </div>
+      <div class="row">
+        <span>{t('SSH 端口')}</span>
+        <span class="control">
+          <input type="number" min="1" max="65535" bind:value={sshTunnel.ssh_port} />
+        </span>
+      </div>
+      <div class="row">
+        <span>{t('用户名')}</span>
+        <span class="control wide">
+          <input type="text" placeholder="root" bind:value={sshTunnel.user} />
+        </span>
+      </div>
+      <div class="row">
+        <span>{t('私钥路径')}</span>
+        <span class="control wide">
+          <input type="text" placeholder="C:\Users\me\.ssh\id_ed25519" bind:value={sshTunnel.key_path} />
+          <button class="ghost small" onclick={pickSshKey}>{t('选择…')}</button>
+        </span>
+      </div>
+      <div class="row">
+        <span>{t('暴露端口')}</span>
+        <span class="control">
+          <input type="number" min="1" max="65535" bind:value={sshTunnel.expose_port} />
+        </span>
+      </div>
+      <div class="row">
+        <span>{t('链接端口（可选）')}</span>
+        <span class="control">
+          <input type="number" min="0" max="65535" placeholder="0" bind:value={sshTunnel.link_port} />
+        </span>
+      </div>
+      <p class="hint">{t('链接端口留空跟随暴露端口；服务器用反向代理对外公布时填对外端口（服务器地址带 https:// 则链接走 https）')}</p>
+      <p class="hint">{t('链接地址为 http://服务器地址:暴露端口；服务器 sshd 需开启 GatewayPorts yes 才能公网访问')}</p>
+    {/if}
   </section>
 
   <section class="card">
@@ -456,6 +577,23 @@
     padding: 6px 8px;
     font-size: 13px;
   }
+  input[type='text'] {
+    width: 100%;
+    min-width: 180px;
+    height: 32px;
+    box-sizing: border-box;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  .control.wide {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
+  }
   select {
     height: 32px;
     box-sizing: border-box;
@@ -542,6 +680,11 @@
   .group-label {
     font-size: 13px;
     color: var(--text-2);
+  }
+  .hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-4);
   }
   .notice {
     margin: 0;
