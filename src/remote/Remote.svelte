@@ -116,6 +116,7 @@
     <p class="tip dim">{t('链接泄露时点“重置链接”立即吊销，端口不变')}</p>
     <p class="tip dim">{t('若手机无法访问，请检查 Windows 防火墙是否放行 DSHDesktop 与该端口')}</p>
     <p class="tip dim">{t('SSH 隧道模式下链接为 http://服务器地址:暴露端口，需服务器在线且允许远程转发')}</p>
+    <p class="tip dim">{t('Cloudflare 模式下链接为 https://xxx.trycloudflare.com，无需端口映射或公网服务器')}</p>
   {/if}
 </main>
 

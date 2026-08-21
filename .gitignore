@@ -18,5 +18,8 @@ docs/superpowers/
 # 工具产物
 .playwright-mcp/
 
+# 本地 cargo 内网镜像源配置（TLS 沙箱临时构建用），不入库
+.cargo-home/
+
 # 博客文章，仅本地留存，不入库
 docs/blog.zh-CN.md

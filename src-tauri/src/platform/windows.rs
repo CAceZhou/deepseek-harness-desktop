@@ -77,6 +77,10 @@ impl Platform for WindowsPlatform {
         "node.exe"
     }
 
+    fn cloudflared_exe_name(&self) -> &'static str {
+        "cloudflared.exe"
+    }
+
     fn runtime_base_dir(&self) -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))

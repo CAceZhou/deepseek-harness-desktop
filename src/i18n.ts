@@ -106,6 +106,13 @@ const en: Record<string, string> = {
   '链接端口需在 1-65535 或留空': 'Link port must be 1-65535 or empty',
   'SSH 隧道模式下链接为 http://服务器地址:暴露端口，需服务器在线且允许远程转发': 'In SSH tunnel mode the link is http://<server>:<expose-port>; the server must be online and allow remote forwarding',
 
+  // Cloudflare 隧道
+  'Cloudflare 隧道': 'Cloudflare tunnel',
+  '通过 Cloudflare Quick Tunnel 公网访问（无需公网服务器）': 'Access via a Cloudflare Quick Tunnel (no public server needed)',
+  '开启后本机 cloudflared 出站隧道把本地代理发布到公网 trycloudflare 域名，链接可直接分享': 'When enabled, the bundled cloudflared publishes the local proxy to a public trycloudflare URL you can share directly',
+  '需要 cloudflared 随运行时分发；若提示缺失请重新运行 fetch-runtime 或重装': 'cloudflared is shipped with the runtime; if it reports missing, rerun fetch-runtime or reinstall',
+  'Cloudflare 模式下链接为 https://xxx.trycloudflare.com，无需端口映射或公网服务器': 'In Cloudflare mode the link is https://<id>.trycloudflare.com — no port forwarding or public server needed',
+
   // 技能管理
   '技能管理': 'Skills',
   '从外部 Agent 导入': 'Import from external agents',

@@ -192,6 +192,9 @@ pub struct ShellSettings {
     pub remote_port: u16,
     /// SSH 反向隧道配置（内网穿透到自建公网服务器）
     pub ssh_tunnel: SshTunnelSettings,
+    /// Cloudflare Quick Tunnel（上游原本的远程方式）：本机 cloudflared 出站
+    /// 隧道把本地鉴权代理发布到公网 trycloudflare 域名，无需公网服务器端口映射。
+    pub cloudflare_tunnel: bool,
     /// 旧版字段（≤0.1.7）：读取时迁移进 notify.turn_done.enabled，保存时不再写出
     #[serde(skip_serializing)]
     notify_on_completion: Option<bool>,
@@ -221,6 +224,7 @@ impl Default for ShellSettings {
             check_update_on_launch: false,
             remote_port: REMOTE_PORT_DEFAULT,
             ssh_tunnel: SshTunnelSettings::default(),
+            cloudflare_tunnel: false,
             notify_on_completion: None,
         }
     }
@@ -360,6 +364,7 @@ pub fn set_shell_settings(
         let _ = cfg.0.send(crate::remote::RemoteSettings {
             port: s.remote_port,
             ssh: s.ssh_tunnel.clone(),
+            cloudflare: s.cloudflare_tunnel,
         });
     }
     if let Some(w) = app.get_webview_window("main") {

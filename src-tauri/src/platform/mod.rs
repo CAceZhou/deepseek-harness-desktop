@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 /// 并替换下面的 compile_error! 占位。
 pub trait Platform: Send + Sync {
     fn node_exe_name(&self) -> &'static str;
+    /// 远程访问隧道可执行文件名（随 runtime 内嵌分发）：cloudflared quick tunnel
+    fn cloudflared_exe_name(&self) -> &'static str;
     /// 应用数据根目录（Windows: %LOCALAPPDATA%\DSHDesktop）
     fn runtime_base_dir(&self) -> PathBuf;
     /// 安装包资源目录中内嵌运行时所在路径：<resource_dir>/runtime/<triplet>
@@ -56,6 +58,7 @@ mod tests {
     fn windows_platform_basics() {
         let p = current();
         assert_eq!(p.node_exe_name(), "node.exe");
+        assert_eq!(p.cloudflared_exe_name(), "cloudflared.exe");
         assert_eq!(p.runtime_triplet(), "windows-x64");
         assert!(p.runtime_base_dir().ends_with("DSHDesktop"));
         let r = p.resource_runtime_dir(Path::new("C:\\res"));

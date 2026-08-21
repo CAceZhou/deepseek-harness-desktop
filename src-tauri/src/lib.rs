@@ -357,6 +357,7 @@ pub fn run() {
             theme::spawn_theme_follower(&handle, platform.clone(), paths.home.clone());
             let emit_handle = handle.clone();
             let nav_home = home_url.clone();
+            let cloudflared_exe = paths.cloudflared_exe.clone();
             let remote_log = paths
                 .home
                 .parent()
@@ -429,6 +430,7 @@ pub fn run() {
                 let (tx, rx) = watch::channel(remote::RemoteSettings {
                     port: s.remote_port,
                     ssh: s.ssh_tunnel.clone(),
+                    cloudflare: s.cloudflare_tunnel,
                 });
                 handle.manage(remote::RemoteConfig(tx));
                 rx
@@ -438,6 +440,8 @@ pub fn run() {
                 platform.ssh_client_exe(),
                 vec![],
                 platform.runtime_base_dir(),
+                cloudflared_exe,
+                vec![],
                 remote_cfg_rx,
                 port_rx,
                 Box::new(move |ev| match ev {

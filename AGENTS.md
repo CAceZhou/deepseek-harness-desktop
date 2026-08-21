@@ -142,14 +142,25 @@ src-tauri/src/
                     open_update_page 用 rundll32 开 releases 页（不引 opener 插件）；
                     启动时检查默认关，有新版弹 toast，失败只记 events.log；4 命令
   remote/           远程访问：mod.rs=RemoteManager(生命周期/token/6 命令；运行配置
-                      (固定端口+SSH 隧道)经 RemoteConfig watch 通道读设置（改配置无需
-                      重启应用），0.0.0.0:<端口> 直连暴露 + UDP connect 取局域网 IPv4
-                      拼链接 http://<IP>:<端口>/?token=…；SSH 模式先起反向隧道、
-                      隧道就绪才转 Up，链接用服务器地址 http://<服务器>:<暴露端口>
-                      （协议跟随 https:// 前缀；端口可被 link_port 覆盖——反向代理
-                      对外公布时对外端口 ≠ 转发端口，-R 绑定仍用 expose_port）；
-                      端口占用/配置不完整报错；reset_link 原地轮换 token 吊销泄露
-                      链接，地址不变) +
+                      (固定端口+SSH 隧道+Cloudflare)经 RemoteConfig watch 通道读设置
+                      （改配置无需重启应用），0.0.0.0:<端口> 直连暴露 + UDP connect 取
+                      局域网 IPv4 拼链接 http://<IP>:<端口>/?token=…；三种对外方式并存
+                      （局域网始终直连；SSH 经系统 ssh -R 反向隧道到自建服务器；
+                      再引入上游 Cloudflare Quick Tunnel：cloudflared 出站隧道把本地
+                      代理发布到公网 trycloudflare 域名）。对外链接按主宰方式取其一，
+                      优先级 Cloudflare > SSH > 局域网 IP；SSH/Cloudflare 是独立开关、
+                      可同时开启，主宰方（cf_drives）驱动 phase/link，另一方隧道在后台
+                      跑只记日志不抢占链接。SSH 模式链接用服务器地址
+                      http://<服务器>:<暴露端口>（协议跟随 https:// 前缀；端口可被
+                      link_port 覆盖——反向代理对外公布时对外端口 ≠ 转发端口，-R 绑定
+                      仍用 expose_port）；Cloudflare 缺失 exe 时 start 直接报错提示
+                      重装/重跑 fetch-runtime。端口占用/配置不完整报错；reset_link 原地
+                      轮换 token 吊销泄露链接，地址不变) +
+                    tunnel.rs(上游 cloudflared quick tunnel 监督：spawn
+                     tunnel --url <本地代理>；stdout 泵解析 trycloudflare URL→Up，
+                     指数退避重启，累计 5 次终态 Failed；每次重启 URL 都变；停止
+                     kill 树+Job 兜底；exe 经 Platform::cloudflared_exe_name
+                     (随运行时内嵌分发，测试注入 node+fixture)) +
                     ssh_tunnel.rs(系统 OpenSSH 客户端监督：ssh -N -T -o BatchMode=yes
                      -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new
                      -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3
@@ -201,7 +212,7 @@ src-tauri/windows/  nsis-hooks.nsh：NSIS 安装/卸载钩子（bundle.windows.n
                     "Unable to uninstall!"（开始菜单/设置卸载走 %TEMP% 副本，不受影响）；
                     杀后轮询等退净（≤10s）；postuninstall 再 RMDir /r runtime 兜底
                     清单外残留（dsh 自更新新增的文件）
-scripts/            fetch-runtime.ps1(下载 Node+dsh+pnpm+精简)、prune-runtime.ps1(精简运行时)、
+scripts/            fetch-runtime.ps1(下载 Node+cloudflared+dsh+pnpm+精简)、prune-runtime.ps1(精简运行时)、
                     acceptance.ps1(端到端验收)、shot-window.ps1(窗口截图)、
                     hide-show-theme.ps1(托盘隐藏回归)、get-attr20.ps1(读 DWM 深色属性)、
                     simulate-first-launch.ps1(模拟首启并截图)、verify-zoom.ps1(UI 缩放目验，需先 pnpm dev)、
@@ -218,7 +229,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（193 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
+cd src-tauri && cargo test            # 全部测试（199 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -269,7 +280,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 193 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 199 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 

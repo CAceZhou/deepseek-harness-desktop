@@ -32,6 +32,7 @@
     check_update_on_launch: boolean
     remote_port: number
     ssh_tunnel: SshTunnelSettings
+    cloudflare_tunnel: boolean
   }
   // 与 Rust 端 update::UpdateInfo 对应
   type UpdateInfo = {
@@ -63,6 +64,7 @@
     check_update_on_launch: false,
     remote_port: 7788,
     ssh_tunnel: { ...DEFAULT_SSH },
+    cloudflare_tunnel: false,
   }
 
   // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
@@ -95,6 +97,7 @@
   let checkOnLaunch = $state(false)
   let remotePort = $state(7788)
   let sshTunnel = $state<SshTunnelSettings>({ ...DEFAULT_SSH })
+  let cloudflareTunnel = $state(false)
   let recording = $state<'in' | 'out' | null>(null)
   let saving = $state(false)
   let notice = $state<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -145,6 +148,7 @@
     checkOnLaunch = s.check_update_on_launch
     remotePort = s.remote_port
     sshTunnel = { ...s.ssh_tunnel }
+    cloudflareTunnel = s.cloudflare_tunnel
   }
 
   const CODE_LABELS: Record<string, string> = {
@@ -253,6 +257,7 @@
           expose_port: Math.min(Math.max(Math.round(sshTunnel.expose_port), 1), 65535),
           link_port: Math.min(Math.max(Math.round(sshTunnel.link_port || 0), 0), 65535),
         },
+        cloudflare_tunnel: cloudflareTunnel,
       }
       await invoke('set_shell_settings', { next })
       await invoke('set_autostart', { enabled: autostart })
@@ -405,6 +410,17 @@
       <p class="hint">{t('链接端口留空跟随暴露端口；服务器用反向代理对外公布时填对外端口（服务器地址带 https:// 则链接走 https）')}</p>
       <p class="hint">{t('链接地址为 http://服务器地址:暴露端口；服务器 sshd 需开启 GatewayPorts yes 才能公网访问')}</p>
     {/if}
+  </section>
+
+  <section class="card">
+    <h2>{t('Cloudflare 隧道')}</h2>
+    <label class="check">
+      <input type="checkbox" bind:checked={cloudflareTunnel} />
+      {t('通过 Cloudflare Quick Tunnel 公网访问（无需公网服务器）')}
+    </label>
+    <div class="divider"></div>
+    <p class="hint">{t('开启后本机 cloudflared 出站隧道把本地代理发布到公网 trycloudflare 域名，链接可直接分享')}</p>
+    <p class="hint">{t('需要 cloudflared 随运行时分发；若提示缺失请重新运行 fetch-runtime 或重装')}</p>
   </section>
 
   <section class="card">

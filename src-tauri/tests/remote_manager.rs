@@ -14,6 +14,9 @@ impl Platform for TestPlatform {
     fn node_exe_name(&self) -> &'static str {
         "node.exe"
     }
+    fn cloudflared_exe_name(&self) -> &'static str {
+        "cloudflared.exe"
+    }
     fn runtime_base_dir(&self) -> PathBuf {
         PathBuf::from(".")
     }
@@ -96,29 +99,32 @@ async fn wait_dsh_ready(dsh_port: u16) {
 }
 
 /// 与生产 lib.rs 同构：RemoteSettings 经 watch 通道喂给管理器；
-/// ssh_exe 传 fixture 脚本（node 跑 fake-ssh.cjs），ssh_work_dir 用 tempdir 隔离
-/// fake-ssh.fail 标记文件。
+/// ssh_exe/tunnel_exe 都传 fixture 脚本（node 跑 fake-ssh.cjs / fake-cloudflared.cjs），
+/// ssh_work_dir 用 tempdir 隔离 fake-ssh.fail / fake-cloudflared.exit-after 标记文件。
 fn make_manager(
     remote_port: u16,
     ssh: SshTunnelSettings,
+    cloudflare: bool,
     dsh_port: Option<u16>,
 ) -> (
     RemoteManager,
     watch::Sender<RemoteSettings>,
     Arc<Mutex<Vec<RemoteStatus>>>,
 ) {
-    let (ctx, crx) = watch::channel(RemoteSettings { port: remote_port, ssh });
+    let (ctx, crx) = watch::channel(RemoteSettings { port: remote_port, ssh, cloudflare });
     let (_dtx, drx) = watch::channel(dsh_port);
     let statuses: Arc<Mutex<Vec<RemoteStatus>>> = Arc::new(Mutex::new(Vec::new()));
     let st = statuses.clone();
-    // fake-ssh 的 current_dir 必须是真实存在的目录且测试期间不消失：
+    // fake 脚本的 current_dir 必须是真实存在的目录且测试期间不消失：
     // TempDir drop 会删目录，这里 leak 掉（测试进程生命周期内有效）
     let work_dir = Box::leak(Box::new(tempfile::tempdir().unwrap())).path().to_path_buf();
     let mgr = RemoteManager::new(
         Arc::new(TestPlatform),
         system_node(),
         vec![fixture("fake-ssh.cjs").to_string_lossy().into_owned()],
-        work_dir,
+        work_dir.clone(),
+        system_node(),
+        vec![fixture("fake-cloudflared.cjs").to_string_lossy().into_owned()],
         crx,
         drx,
         Box::new(move |ev| {
@@ -159,7 +165,7 @@ async fn start_with_port_in_use_errors() {
     // 占住一个端口，RemoteManager 绑 0.0.0.0:同端口必然失败
     let blocker = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
     let port = blocker.local_addr().unwrap().port();
-    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), None);
+    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), false, None);
     let s = mgr.start().await;
     assert_eq!(s.phase, "error");
     let err = s.error.unwrap();
@@ -176,7 +182,7 @@ async fn full_chain_up_then_off() {
     wait_dsh_ready(dsh_port).await;
 
     let remote_port = free_port().unwrap();
-    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), Some(dsh_port));
+    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), false, Some(dsh_port));
     let s = mgr.start().await;
     assert_eq!(s.phase, "up");
     let link = s.link.as_deref().unwrap().to_string();
@@ -255,7 +261,7 @@ async fn ssh_tunnel_up_uses_server_url() {
 
     let remote_port = free_port().unwrap();
     let (mgr, _ctx, _statuses) =
-        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), Some(dsh_port));
+        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), false, Some(dsh_port));
     mgr.start().await;
     // SSH 隧道就绪是异步的（监督循环先确认进程稳定存活再 Up），轮询等待
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -309,6 +315,7 @@ async fn ssh_link_port_override_for_reverse_proxy() {
     let (mgr, _ctx, _statuses) = make_manager(
         remote_port,
         ssh_on("https://vps.example.com", 8080, 8443),
+        false,
         Some(dsh_port),
     );
     mgr.start().await;
@@ -346,6 +353,7 @@ async fn ssh_failure_via_marker() {
     let (ctx, crx) = watch::channel(RemoteSettings {
         port: remote_port,
         ssh: ssh_on("vps.example.com", 8080, 0),
+        cloudflare: false,
     });
     let (_dtx, drx) = watch::channel(Some(dsh_port));
     let mgr = RemoteManager::new(
@@ -353,6 +361,8 @@ async fn ssh_failure_via_marker() {
         system_node(),
         vec![fixture("fake-ssh.cjs").to_string_lossy().into_owned()],
         ssh_work.path().to_path_buf(),
+        system_node(),
+        vec![fixture("fake-cloudflared.cjs").to_string_lossy().into_owned()],
         crx,
         drx,
         Box::new(|_| {}),
@@ -389,13 +399,13 @@ async fn port_change_applies_on_next_start() {
     wait_dsh_ready(dsh_port).await;
 
     let port_a = free_port().unwrap();
-    let (mgr, ctx, _statuses) = make_manager(port_a, ssh_off(), Some(dsh_port));
+    let (mgr, ctx, _statuses) = make_manager(port_a, ssh_off(), false, Some(dsh_port));
     let s = mgr.start().await;
     assert_eq!(s.phase, "up");
     assert!(s.link.unwrap().contains(&format!(":{port_a}/?token=")));
 
     let port_b = free_port().unwrap();
-    ctx.send(RemoteSettings { port: port_b, ssh: ssh_off() }).unwrap();
+    ctx.send(RemoteSettings { port: port_b, ssh: ssh_off(), cloudflare: false }).unwrap();
     let s2 = mgr.stop().await;
     assert_eq!(s2.phase, "off");
     let s3 = mgr.start().await;
@@ -409,10 +419,107 @@ async fn port_change_applies_on_next_start() {
     let _ = dsh.kill();
 }
 
+/// Cloudflare Quick Tunnel 模式：cloudflared 出站隧道把本地代理发布到公网
+/// trycloudflare 域名；链接 = 隧道 URL + token，phase 经 Starting 转 Up。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloudflare_tunnel_up_uses_cf_url() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut dsh = spawn_fixture_dsh(dsh_port, work.path());
+    wait_dsh_ready(dsh_port).await;
+
+    let remote_port = free_port().unwrap();
+    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), true, Some(dsh_port));
+    let s = mgr.start().await;
+    // Cloudflare 是链接主宰：进入 Starting（等隧道就绪），再异步转 Up
+    assert_eq!(s.phase, "starting");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let s = mgr.status();
+        if s.phase == "up" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "cloudflared 未在 30s 内 up：{:?}", mgr.status());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let link = mgr.status().link.unwrap();
+    assert!(
+        link.starts_with("https://") && link.contains(".trycloudflare.com/?token="),
+        "Cloudflare 模式链接应为隧道 URL：{link}"
+    );
+
+    mgr.stop().await;
+    let _ = dsh.kill();
+}
+
+/// cloudflared 缺失：请求出站隧道但 exe 不是文件 → 直接转 error，提示重装/重跑 fetch-runtime
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloudflare_missing_bin_errors() {
+    let dsh_port = free_port().unwrap();
+    let (ctx, crx) = watch::channel(RemoteSettings {
+        port: free_port().unwrap(),
+        ssh: ssh_off(),
+        cloudflare: true,
+    });
+    let (_dtx, drx) = watch::channel(Some(dsh_port));
+    // tunnel_exe 指向不存在的路径
+    let work_dir = Box::leak(Box::new(tempfile::tempdir().unwrap())).path().to_path_buf();
+    let mgr = RemoteManager::new(
+        Arc::new(TestPlatform),
+        system_node(),
+        vec![fixture("fake-ssh.cjs").to_string_lossy().into_owned()],
+        work_dir.clone(),
+        PathBuf::from(r"C:\nonexistent\cloudflared.exe"),
+        vec![],
+        crx,
+        drx,
+        Box::new(|_| {}),
+    );
+    let _ = ctx;
+    let s = mgr.start().await;
+    assert_eq!(s.phase, "error");
+    let err = s.error.unwrap();
+    assert!(err.contains("cloudflared 缺失"), "应提示 cloudflared 缺失：{err}");
+    assert!(s.link.is_none());
+}
+
+/// Cloudflare 与 SSH 并存：两者都开时 Cloudflare 是链接主宰（cf_drives），
+/// 链接取隧道 URL；SSH 隧道在后台跑、不抢占链接。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloudflare_drives_when_coexisting_with_ssh() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut dsh = spawn_fixture_dsh(dsh_port, work.path());
+    wait_dsh_ready(dsh_port).await;
+
+    let remote_port = free_port().unwrap();
+    let (mgr, _ctx, _statuses) =
+        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), true, Some(dsh_port));
+    let s = mgr.start().await;
+    assert_eq!(s.phase, "starting");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let s = mgr.status();
+        if s.phase == "up" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "并存模式未在 30s 内 up：{:?}", mgr.status());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let link = mgr.status().link.unwrap();
+    assert!(
+        link.contains(".trycloudflare.com/?token="),
+        "Cloudflare 主宰时链接应为隧道 URL（SSH 不抢占）：{link}"
+    );
+
+    mgr.stop().await;
+    let _ = dsh.kill();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reset_link_requires_running() {
     let port = free_port().unwrap();
-    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), None);
+    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), false, None);
     assert!(mgr.reset_link().is_err(), "off 态重置应报错");
 }
 
@@ -424,7 +531,7 @@ async fn reset_link_rotates_token_keeps_url() {
     wait_dsh_ready(dsh_port).await;
 
     let remote_port = free_port().unwrap();
-    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), Some(dsh_port));
+    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), false, Some(dsh_port));
     mgr.start().await;
     let s = mgr.status();
     let old_link = s.link.unwrap();

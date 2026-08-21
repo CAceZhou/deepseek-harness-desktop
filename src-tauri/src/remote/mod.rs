@@ -1,18 +1,25 @@
-//! 远程访问：固定端口局域网暴露 + 可选 SSH 反向隧道内网穿透 + 壳内嵌 token 鉴权
-//! 反向代理。链路与安全模型见 docs/design.zh-CN.md；概览：
+//! 远程访问：固定端口局域网暴露 + SSH 反向隧道 + Cloudflare Quick Tunnel +
+//! 壳内嵌 token 鉴权反向代理。链路与安全模型见 docs/design.zh-CN.md；概览：
 //!   a) 局域网：手机浏览器(同一局域网) ─HTTP→ 电脑 0.0.0.0:<固定端口>
 //!        → remote::proxy.rs(token 门岗) → 127.0.0.1:dsh(完整 Web UI)
 //!   b) 公网/异地（配置 SSH 隧道后）：浏览器 ─HTTP→ 自建公网服务器:<暴露端口>
 //!        → SSH -R 反向隧道 → 电脑 127.0.0.1:<固定端口> → token 门岗 → dsh
+//!   c) 公网（启用 Cloudflare Quick Tunnel 后）：浏览器 ─HTTPS→ Cloudflare
+//!        → cloudflared(纯出站) → 127.0.0.1:<固定端口> → token 门岗 → dsh
+//!
+//! 三种对外方式并存：鉴权代理始终绑定 0.0.0.0:<固定端口>（局域网直连）；
+//! SSH 与 Cloudflare 是独立的对外开关。对外访问链接按优先级取其一：
+//! Cloudflare（公网可分享）> SSH（自建服务器）> 局域网 IP。
 //!
 //! RemoteManager 管生命周期：每次 start 重新生成 token，把鉴权代理绑定到设置里的
-//! 固定端口（0.0.0.0 全接口）；若配置了 SSH 隧道，再经系统 ssh 客户端把该端口
-//! 反向转发到服务器暴露端口，链接 = http://<服务器地址>:<暴露端口>/?token=…，
-//! 否则链接 = http://<本机局域网 IP>:<固定端口>/?token=…。
+//! 固定端口（0.0.0.0 全接口）；再按启用的对外方式起 SSH 反向隧道和/或 cloudflared
+//! quick tunnel，链接取当时生效的方式对应地址（Cloudflare → trycloudflare.com；
+//! SSH → http://<服务器>:<暴露端口>；否则 → http://<本机局域网 IP>:<固定端口>）。
 //! stop/退出应用即整体关停，链接立即失效。链接泄露时用 reset_link 原地轮换 token
 //! 并掐断现有会话（地址与端口不变）。
 pub mod proxy;
 pub mod ssh_tunnel;
+pub mod tunnel;
 
 use crate::platform::Platform;
 use crate::settings::SshTunnelSettings;
@@ -25,6 +32,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use tauri::State;
 use tokio::sync::watch;
+use tunnel::{TunnelEvent, TunnelProcess, TunnelState};
 
 /// 远程访问运行配置的快照：由 settings.rs 的 set_shell_settings 保存设置后经
 /// watch 通道推入，RemoteManager 每次 start 读当前值——改配置无需重启应用。
@@ -34,6 +42,8 @@ pub struct RemoteSettings {
     pub port: u16,
     /// SSH 反向隧道配置（enabled 且 valid 时启用）
     pub ssh: SshTunnelSettings,
+    /// Cloudflare Quick Tunnel 开关（cloudflared 出站隧道发布到公网）
+    pub cloudflare: bool,
 }
 
 /// 上述配置的托管句柄（watch Sender 端）
@@ -133,6 +143,12 @@ struct Inner {
     proxy_port: Option<u16>,
     proxy: Option<ProxyHandle>,
     ssh_tunnel: Option<SshTunnelProcess>,
+    /// Cloudflare quick tunnel 监督进程（启用时存在）
+    cf_tunnel: Option<TunnelProcess>,
+    /// Cloudflare 是否为当前会话的对外链接主宰方式（= 本次 start 是否启用 cloudflare）。
+    /// 为 true 时由 cloudflared 事件驱动 phase/link，SSH 事件只记日志不抢占状态；
+    /// 为 false 时按原逻辑由 SSH（启用时）或局域网 IP 决定。
+    cf_drives: bool,
 }
 
 impl Inner {
@@ -167,6 +183,10 @@ pub struct RemoteManager {
     ssh_prefix: Vec<String>,
     /// ssh 子进程的工作目录（生产 = 应用数据目录）
     ssh_work_dir: PathBuf,
+    /// cloudflared 可执行路径（随 runtime 内嵌分发）
+    tunnel_exe: PathBuf,
+    /// cloudflared 进程前置参数（测试注入 fixture 脚本路径；生产为空）
+    tunnel_prefix: Vec<String>,
     /// 运行配置（watch 通道：设置保存后立即生效，下次 start 用新值）
     config: watch::Receiver<RemoteSettings>,
     dsh_port: watch::Receiver<Option<u16>>,
@@ -179,6 +199,8 @@ impl RemoteManager {
         ssh_exe: PathBuf,
         ssh_prefix: Vec<String>,
         ssh_work_dir: PathBuf,
+        tunnel_exe: PathBuf,
+        tunnel_prefix: Vec<String>,
         config: watch::Receiver<RemoteSettings>,
         dsh_port: watch::Receiver<Option<u16>>,
         on_event: Box<dyn Fn(RemoteEvent) + Send + Sync>,
@@ -193,6 +215,8 @@ impl RemoteManager {
                     proxy_port: None,
                     proxy: None,
                     ssh_tunnel: None,
+                    cf_tunnel: None,
+                    cf_drives: false,
                 }),
                 on_event,
             }),
@@ -200,6 +224,8 @@ impl RemoteManager {
             ssh_exe,
             ssh_prefix,
             ssh_work_dir,
+            tunnel_exe,
+            tunnel_prefix,
             config,
             dsh_port,
         }
@@ -243,21 +269,28 @@ impl RemoteManager {
         };
         let proxy_port = proxy.port;
 
-        // 决定访问地址：SSH 隧道模式用服务器地址（与生成链接一致），否则局域网 IP
-        let (url, ssh_tunnel) = if cfg.ssh.enabled {
-            if !cfg.ssh.valid() {
-                proxy.shutdown().await;
-                return self.transition_error(
-                    "SSH 隧道配置不完整：服务器地址、用户名、私钥路径必填，端口需在 1-65535"
-                        .into(),
-                );
-            }
+        // 对外链接主宰方式：Cloudflare > SSH > 局域网。cloudflared 启用时需要 exe 存在。
+        let cf_drives = cfg.cloudflare;
+        if cfg.cloudflare && !self.tunnel_exe.is_file() {
+            proxy.shutdown().await;
+            return self.transition_error(format!(
+                "cloudflared 缺失（{}），请重新安装或重新运行 fetch-runtime",
+                self.tunnel_exe.display()
+            ));
+        }
+        if cfg.ssh.enabled && !cfg.ssh.valid() {
+            proxy.shutdown().await;
+            return self.transition_error(
+                "SSH 隧道配置不完整：服务器地址、用户名、私钥路径必填，端口需在 1-65535"
+                    .into(),
+            );
+        }
+
+        // SSH 反向隧道（enabled 时；无论是否 Cloudflare 主宰都起，两者可并存）
+        let ssh_tunnel = if cfg.ssh.enabled {
             let host = ssh_url_host(&cfg.ssh.server);
-            // 链接协议跟随 server 前缀；端口可被 link_port 覆盖（反向代理对外公布场景）。
-            // 隧道 -R 绑定的永远是 expose_port，两者解耦。
-            let url = ssh_link_url(&cfg.ssh.server, cfg.ssh.expose_port, cfg.ssh.link_port);
             let weak: Weak<Shared> = Arc::downgrade(&self.shared);
-            let tunnel = SshTunnelProcess::spawn_supervised(
+            Some(SshTunnelProcess::spawn_supervised(
                 self.platform.clone(),
                 self.ssh_exe.clone(),
                 self.ssh_prefix.clone(),
@@ -272,42 +305,85 @@ impl RemoteManager {
                     let Some(shared) = weak.upgrade() else { return };
                     handle_ssh_event(&shared, ev);
                 },
-            );
-            (url, Some(tunnel))
+            ))
         } else {
-            (format!("http://{}:{proxy_port}", lan_ipv4()), None)
+            None
+        };
+
+        // Cloudflare quick tunnel（enabled 时）：cloudflared 出站隧道指向本地鉴权代理
+        let cf_tunnel = if cfg.cloudflare {
+            let weak: Weak<Shared> = Arc::downgrade(&self.shared);
+            let target = format!("http://127.0.0.1:{proxy_port}");
+            Some(TunnelProcess::spawn_supervised(
+                self.platform.clone(),
+                self.tunnel_exe.clone(),
+                self.tunnel_prefix.clone(),
+                target,
+                self.ssh_work_dir.clone(),
+                move |ev| {
+                    let Some(shared) = weak.upgrade() else { return };
+                    handle_cf_event(&shared, ev);
+                },
+            ))
+        } else {
+            None
+        };
+
+        // 初始 url/phase：Cloudflare 或 SSH 主宰时保持 Starting（等隧道就绪才 Up）；
+        // 两者都关时局域网直连即 up。链接地址由主宰方式决定：
+        //   Cloudflare → 隧道 URL（handler 上报）；SSH → 服务器地址；否则局域网 IP。
+        let (url, starting) = if cf_drives {
+            (None, true)
+        } else if ssh_tunnel.is_some() {
+            (
+                Some(ssh_link_url(
+                    &cfg.ssh.server,
+                    cfg.ssh.expose_port,
+                    cfg.ssh.link_port,
+                )),
+                true,
+            )
+        } else {
+            (Some(format!("http://{}:{proxy_port}", lan_ipv4())), false)
         };
 
         let st = {
             let mut g = self.shared.inner.lock().unwrap();
-            // SSH 模式：等隧道就绪后才 Up（避免链接 URL 对外但隧道未建立）
-            g.phase = if ssh_tunnel.is_some() { Phase::Starting } else { Phase::Up };
+            // SSH/Cloudflare 模式：等隧道就绪后才 Up（避免链接 URL 对外但隧道未建立）
+            g.phase = if starting { Phase::Starting } else { Phase::Up };
             g.token = Some(token);
-            g.url = Some(url.clone());
+            g.url = url;
             g.error = None;
             g.proxy_port = Some(proxy_port);
             g.proxy = Some(proxy);
             g.ssh_tunnel = ssh_tunnel;
+            g.cf_tunnel = cf_tunnel;
+            g.cf_drives = cf_drives;
             g.dto()
         };
         (self.shared.on_event)(RemoteEvent::Log(format!(
-            "[dshdesktop] remote access: proxy 0.0.0.0:{proxy_port} -> {url} (token 仅存于链接)"
+            "[dshdesktop] remote access: proxy 0.0.0.0:{proxy_port} (cf_drives={cf_drives}) \
+             (token 仅存于链接)"
         )));
         (self.shared.on_event)(RemoteEvent::Status(st.clone()));
         st
     }
 
     pub async fn stop(&self) -> RemoteStatus {
-        let (proxy, ssh_tunnel) = {
+        let (proxy, ssh_tunnel, cf_tunnel) = {
             let mut g = self.shared.inner.lock().unwrap();
             g.phase = Phase::Off;
             g.token = None;
             g.url = None;
             g.error = None;
             g.proxy_port = None;
-            (g.proxy.take(), g.ssh_tunnel.take())
+            g.cf_drives = false;
+            (g.proxy.take(), g.ssh_tunnel.take(), g.cf_tunnel.take())
         };
         if let Some(t) = ssh_tunnel {
+            t.stop().await;
+        }
+        if let Some(t) = cf_tunnel {
             t.stop().await;
         }
         if let Some(p) = proxy {
@@ -361,6 +437,11 @@ fn handle_ssh_event(shared: &Shared, ev: SshEvent) {
                 if g.phase == Phase::Off {
                     return;
                 }
+                // Cloudflare 为当前对外的链接主宰方式时，SSH 隧道只在后台跑，
+                // 其状态不抢占 phase/link（只记日志）；避免两台隧道互相覆盖链接。
+                if g.cf_drives {
+                    return;
+                }
                 match ss {
                     SshState::Up => {
                         // 隧道就绪：链接地址此前已按服务器地址生成，这里只落 Up
@@ -375,6 +456,48 @@ fn handle_ssh_event(shared: &Shared, ev: SshEvent) {
                         g.error = Some(format!("SSH 隧道失败：{msg}"));
                     }
                     SshState::Stopped => return,
+                }
+                g.dto()
+            };
+            (shared.on_event)(RemoteEvent::Status(st));
+        }
+    }
+}
+
+/// cloudflared quick tunnel 事件：启用时它主宰对外链接，Up 时把 trycloudflare URL
+/// 落进状态生成带 token 的链接；Starting 保持 Starting；Failed 进入 Error。
+fn handle_cf_event(shared: &Shared, ev: TunnelEvent) {
+    match ev {
+        TunnelEvent::Log(l) => (shared.on_event)(RemoteEvent::Log(l)),
+        TunnelEvent::StateChanged(ts) => {
+            let st = {
+                let mut g = shared.inner.lock().unwrap();
+                // stop() 后迟到的隧道事件不得把状态复活（隧道停杀与事件上报有窗口期）
+                if g.phase == Phase::Off {
+                    return;
+                }
+                // 仅当本次会话 Cloudflare 是主宰方式时才由它驱动 phase/link
+                if !g.cf_drives {
+                    return;
+                }
+                match ts {
+                    TunnelState::Up { url } => {
+                        g.phase = Phase::Up;
+                        g.url = Some(url);
+                        g.error = None;
+                    }
+                    // 隧道重连：token 与代理保留，链接随新 URL 重新生成
+                    TunnelState::Starting => {
+                        g.phase = Phase::Starting;
+                        g.url = None;
+                    }
+                    TunnelState::Failed(msg) => {
+                        g.phase = Phase::Error;
+                        g.url = None;
+                        g.error = Some(format!("cloudflared 隧道失败：{msg}"));
+                    }
+                    // 仅由 stop() 触发，那里已落 Off 并上报
+                    TunnelState::Stopped => return,
                 }
                 g.dto()
             };
