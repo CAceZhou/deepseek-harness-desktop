@@ -87,8 +87,10 @@ const en: Record<string, string> = {
   '若手机无法访问，请检查 Windows 防火墙是否放行 DSHDesktop 与该端口': 'If your phone cannot connect, check that Windows Firewall allows DSHDesktop and this port',
   '远程访问端口': 'Remote access port',
   '手机与电脑需在同一网络，端口需在防火墙放行': 'Phone and PC must be on the same network; allow the port through the firewall',
+  '允许局域网访问': 'Allow LAN access',
+  '默认关闭：本机端口只监听回环，局域网不可直连。开启后局域网内可用 http://电脑IP:端口 直接访问（局域网链路为明文 HTTP，仅建议可信网络使用）': 'Off by default: the local port listens on loopback only, so the LAN cannot reach it directly. When on, the LAN can open http://<PC-IP>:<port> directly — the LAN path is plaintext HTTP, so only use on trusted networks',
   '允许明文 HTTP 访问': 'Allow plaintext HTTP access',
-  '默认关闭：远程链接只走 HTTPS（Cloudflare 隧道或自建服务器 TLS 反代）。开启后局域网直连、SSH 非 TLS 暴露端口可用 http:// 访问，明文传输不安全，仅建议可信网络使用': 'Off by default: remote links are HTTPS only (Cloudflare tunnel or your server\'s TLS reverse proxy). When on, LAN direct access and non-TLS SSH expose ports can be reached via http:// — plaintext, so only use on trusted networks',
+  '默认关闭：远程链接只走 HTTPS（Cloudflare 隧道或自建服务器 TLS 反代）。开启后 SSH 非 TLS 暴露端口可用 http:// 链接访问，明文传输不安全，仅建议可信网络使用': 'Off by default: remote links are HTTPS only (Cloudflare tunnel or your server\'s TLS reverse proxy). When on, non-TLS SSH expose ports can be linked via http:// — plaintext, so only use on trusted networks',
 
   // SSH 隧道（内网穿透）
   'SSH 隧道（内网穿透）': 'SSH tunnel (intranet penetration)',

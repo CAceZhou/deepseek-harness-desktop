@@ -34,6 +34,7 @@
     ssh_tunnel: SshTunnelSettings
     cloudflare_tunnel: boolean
     allow_http: boolean
+    allow_lan: boolean
   }
   // 与 Rust 端 update::UpdateInfo 对应
   type UpdateInfo = {
@@ -67,6 +68,7 @@
     ssh_tunnel: { ...DEFAULT_SSH },
     cloudflare_tunnel: false,
     allow_http: false,
+    allow_lan: false,
   }
 
   // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
@@ -101,6 +103,7 @@
   let sshTunnel = $state<SshTunnelSettings>({ ...DEFAULT_SSH })
   let cloudflareTunnel = $state(false)
   let allowHttp = $state(false)
+  let allowLan = $state(false)
   let recording = $state<'in' | 'out' | null>(null)
   let saving = $state(false)
   let notice = $state<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -153,6 +156,7 @@
     sshTunnel = { ...s.ssh_tunnel }
     cloudflareTunnel = s.cloudflare_tunnel
     allowHttp = s.allow_http
+    allowLan = s.allow_lan
   }
 
   const CODE_LABELS: Record<string, string> = {
@@ -263,6 +267,7 @@
         },
         cloudflare_tunnel: cloudflareTunnel,
         allow_http: allowHttp,
+        allow_lan: allowLan,
       }
       await invoke('set_shell_settings', { next })
       await invoke('set_autostart', { enabled: autostart })
@@ -367,10 +372,16 @@
     <p class="hint">{t('手机与电脑需在同一网络，端口需在防火墙放行')}</p>
     <div class="divider"></div>
     <label class="check">
+      <input type="checkbox" bind:checked={allowLan} />
+      {t('允许局域网访问')}
+    </label>
+    <p class="hint">{t('默认关闭：本机端口只监听回环，局域网不可直连。开启后局域网内可用 http://电脑IP:端口 直接访问（局域网链路为明文 HTTP，仅建议可信网络使用）')}</p>
+    <div class="divider"></div>
+    <label class="check">
       <input type="checkbox" bind:checked={allowHttp} />
       {t('允许明文 HTTP 访问')}
     </label>
-    <p class="hint">{t('默认关闭：远程链接只走 HTTPS（Cloudflare 隧道或自建服务器 TLS 反代）。开启后局域网直连、SSH 非 TLS 暴露端口可用 http:// 访问，明文传输不安全，仅建议可信网络使用')}</p>
+    <p class="hint">{t('默认关闭：远程链接只走 HTTPS（Cloudflare 隧道或自建服务器 TLS 反代）。开启后 SSH 非 TLS 暴露端口可用 http:// 链接访问，明文传输不安全，仅建议可信网络使用')}</p>
   </section>
 
   <section class="card">

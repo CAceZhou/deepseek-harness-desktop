@@ -153,10 +153,7 @@ src-tauri/src/
                       跑只记日志不抢占链接。SSH 模式链接用服务器地址
                        https://<服务器>:<暴露端口>（默认禁 HTTP；协议跟随 https:// 前缀、
                        端口可被 link_port 覆盖——反向代理对外公布时对外端口 ≠ 转发端口，
-                       -R 绑定仍用 expose_port）；明文 HTTP 是独立开关 allow_http
-                       （默认关，见 remote/http.rs）：关时 cookie 带 Secure、不注入
-                       secure-context polyfill、SSH 链接强制 https、局域网直连（天然
-                       http）start 直接报错提示开启开关。Cloudflare 缺失 exe 时 start
+                       -R 绑定仍用 expose_port）；局域网访问由独立开关 allow_lan（默认关）门控：开→绑 0.0.0.0:<端口>、局域网 http://电脑IP:端口 直连（链路天然明文 HTTP）；关→只监听回环、局域网直连 start 报错。明文 HTTP 是独立开关 allow_http（默认关，见 remote/http.rs）：关时 cookie 带 Secure、不注入 secure-context polyfill、SSH 链接强制 https，allow_lan 开启时该链路按明文放行（代理按 allow_http || allow_lan 决策 cookie/polyfill）。Cloudflare 缺失 exe 时 start
                        直接报错提示
                        重装/重跑 fetch-runtime。端口占用/配置不完整报错；reset_link 原地
                        轮换 token 吊销泄露链接，地址不变) +
@@ -240,7 +237,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（205 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
+cd src-tauri && cargo test            # 全部测试（207 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -291,7 +288,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 205 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 207 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 
@@ -300,3 +297,4 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 ## 已知限制
 
 - Win10 深色标题栏聚焦时纯黑（系统行为，`DWMWA_CAPTION_COLOR` 仅 Win11）；要做成恒为 dsh 深灰需无边框自绘标题栏——方案要点见 docs/design.zh-CN.md §8，暂缓。
+

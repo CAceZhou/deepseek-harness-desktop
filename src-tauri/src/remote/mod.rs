@@ -11,12 +11,12 @@
 //! SSH 与 Cloudflare 是独立的对外开关。对外访问链接按优先级取其一：
 //! Cloudflare（公网可分享）> SSH（自建服务器）> 局域网 IP。
 //!
-//! RemoteManager 管生命周期：每次 start 重新生成 token，把鉴权代理绑定到设置里的
-//! 固定端口（0.0.0.0 全接口）；再按启用的对外方式起 SSH 反向隧道和/或 cloudflared
-//! quick tunnel，链接取当时生效的方式对应地址（Cloudflare → trycloudflare.com；
-//! SSH → https://<服务器>:<暴露端口>（禁止 HTTP 时）或跟随服务器前缀；否则 →
-//! 局域网 http://<本机局域网 IP>:<固定端口>，但明文 HTTP 默认禁用——仅当设置
-//! allow_http 开启时才可用，详见 remote/http.rs）。
+//! RemoteManager 管生命周期：每次 start 重新生成 token，把鉴权代理绑定到固定端口
+//! （允许局域网访问时 0.0.0.0 全接口，否则仅回环）；再按启用的对外方式起 SSH
+//! 反向隧道和/或 cloudflared quick tunnel，链接取当时生效的方式对应地址
+//! （Cloudflare → trycloudflare.com；SSH → https://<服务器>:<暴露端口>（禁止
+//! HTTP 时）或跟随服务器前缀；否则 → 局域网 http://<本机局域网 IP>:<固定端口>，
+//! 由「允许局域网访问」开关门控，详见 remote/http.rs）。
 //! stop/退出应用即整体关停，链接立即失效。链接泄露时用 reset_link 原地轮换 token
 //! 并掐断现有会话（地址与端口不变）。
 pub mod http;
@@ -42,15 +42,19 @@ use tunnel::{TunnelEvent, TunnelProcess, TunnelState};
 /// watch 通道推入，RemoteManager 每次 start 读当前值——改配置无需重启应用。
 #[derive(Debug, Clone)]
 pub struct RemoteSettings {
-    /// 本地鉴权代理固定端口（0.0.0.0 绑定）
+    /// 本地鉴权代理固定端口（allow_lan 时绑 0.0.0.0，否则仅回环）
     pub port: u16,
     /// SSH 反向隧道配置（enabled 且 valid 时启用）
     pub ssh: SshTunnelSettings,
     /// Cloudflare Quick Tunnel 开关（cloudflared 出站隧道发布到公网）
     pub cloudflare: bool,
-    /// 允许明文 HTTP（默认关）：false 时链接强制 https、cookie 带 Secure、
-    /// 局域网直连（天然 http）直接报错——即默认不支持 HTTP，详见 remote/http.rs
+    /// 允许明文 HTTP（默认关）：false 时链接强制 https、cookie 带 Secure——
+    /// 即默认不支持 HTTP，详见 remote/http.rs。
     pub allow_http: bool,
+    /// 允许局域网访问（默认关）：true 时代理绑 0.0.0.0:<端口>，局域网内
+    /// http://<电脑IP>:<端口> 直连可用（链路天然明文 HTTP）；false 时只监听
+    /// 回环、局域网链接不生成、局域网直连 start 报错。
+    pub allow_lan: bool,
 }
 
 /// 上述配置的托管句柄（watch Sender 端）
@@ -255,7 +259,10 @@ impl RemoteManager {
         }
         let cfg = self.config.borrow().clone();
         let port = cfg.port;
-        let bind: std::net::SocketAddr = match format!("0.0.0.0:{port}").parse() {
+        // 允许局域网访问：绑 0.0.0.0 全接口（局域网内 http 直连）；否则只监听
+        // 回环（SSH/Cloudflare 隧道出口走 127.0.0.1，不受影响）
+        let host = if cfg.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
+        let bind: std::net::SocketAddr = match format!("{host}:{port}").parse() {
             Ok(a) => a,
             Err(_) => {
                 return self
@@ -263,7 +270,10 @@ impl RemoteManager {
             }
         };
         let token: Arc<str> = generate_token().into();
-        let proxy = match spawn_proxy(token.clone(), self.dsh_port.clone(), bind, cfg.allow_http)
+        // 局域网链路天然是明文 HTTP：开启 allow_lan 即视为该链路放行明文
+        // （代理无法区分来源，统一按 allow_http || allow_lan 决策 cookie/polyfill）
+        let proxy_allow_http = cfg.allow_http || cfg.allow_lan;
+        let proxy = match spawn_proxy(token.clone(), self.dsh_port.clone(), bind, proxy_allow_http)
             .await
         {
             Ok(p) => p,
@@ -294,12 +304,12 @@ impl RemoteManager {
                     .into(),
             );
         }
-        // 局域网直连天然是明文 HTTP：默认禁用（allow_http=false）时直接拒绝启动，
-        // 避免生成一个无法鉴权的 http:// 链接。开启开关后才允许（见 remote/http.rs）
-        if !cfg.allow_http && !cfg.cloudflare && !cfg.ssh.enabled {
+        // 局域网直连由「允许局域网访问」开关门控（默认关）：关闭时不绑 0.0.0.0、
+        // 不生成局域网链接，直接拒绝启动（链路天然明文 HTTP，见 remote/http.rs）
+        if !cfg.allow_lan && !cfg.cloudflare && !cfg.ssh.enabled {
             proxy.shutdown().await;
             return self.transition_error(
-                "局域网直连为明文 HTTP，默认已禁用；如确需使用，请在“其它设置”中开启“允许明文 HTTP 访问”"
+                "局域网访问未开启：请在“其它设置”中开启「允许局域网访问」后重试（局域网为明文 HTTP，仅建议可信网络使用）"
                     .into(),
             );
         }
