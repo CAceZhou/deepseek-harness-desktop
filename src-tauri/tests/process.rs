@@ -12,6 +12,9 @@ impl Platform for TestPlatform {
     fn node_exe_name(&self) -> &'static str {
         "node.exe"
     }
+    fn cloudflared_exe_name(&self) -> &'static str {
+        "cloudflared.exe"
+    }
     fn runtime_base_dir(&self) -> PathBuf {
         PathBuf::from(".")
     }
@@ -52,6 +55,7 @@ fn fixture_paths(work: &Path) -> RuntimePaths {
             .join("fake-dsh.cjs"),
         home: work.join("home"),
         work_dir: work.to_path_buf(),
+        cloudflared_exe: work.join("cloudflared.exe"),
     }
 }
 

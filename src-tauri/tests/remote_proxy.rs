@@ -37,13 +37,19 @@ fn spawn_fixture(port: u16, work: &Path) -> std::process::Child {
         .unwrap()
 }
 
-/// 起代理指向 dsh_port（None 模拟 dsh 未就绪），返回 (句柄, token)
-async fn start_proxy(dsh_port: Option<u16>) -> (ProxyHandle, Arc<str>) {
+/// 起代理指向 dsh_port（None 模拟 dsh 未就绪），返回 (句柄, token)；
+/// allow_http：是否允许明文 HTTP（默认关——Secure cookie + 不注入 polyfill）
+async fn start_proxy(dsh_port: Option<u16>, allow_http: bool) -> (ProxyHandle, Arc<str>) {
     let token: Arc<str> = dshdesktop_lib::remote::generate_token().into();
     let (_tx, rx) = watch::channel(dsh_port);
-    let handle = spawn_proxy(token.clone(), rx, "127.0.0.1:0".parse().unwrap())
-        .await
-        .unwrap();
+    let handle = spawn_proxy(
+        token.clone(),
+        rx,
+        "127.0.0.1:0".parse().unwrap(),
+        allow_http,
+    )
+    .await
+    .unwrap();
     (handle, token)
 }
 
@@ -90,7 +96,7 @@ async fn gate_requires_token() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let (proxy, token) = start_proxy(Some(dsh_port), true).await;
     let base = format!("http://127.0.0.1:{}", proxy.port);
     let http = client();
 
@@ -161,7 +167,7 @@ async fn gate_requires_token() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dsh_down_returns_503() {
-    let (proxy, token) = start_proxy(None).await;
+    let (proxy, token) = start_proxy(None, true).await;
     let http = client();
     let r = http
         .get(format!("http://127.0.0.1:{}/", proxy.port))
@@ -194,7 +200,7 @@ async fn forward_strips_browser_marker_headers() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let (proxy, token) = start_proxy(Some(dsh_port), true).await;
     let base = format!("http://127.0.0.1:{}", proxy.port);
     let r = client()
         .post(format!("{base}/api/agentPreset.list"))
@@ -237,7 +243,7 @@ async fn ws_bridged_with_cookie() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let (proxy, token) = start_proxy(Some(dsh_port), true).await;
     let url = format!("ws://127.0.0.1:{}/api/events.mux", proxy.port);
     let mut req = url.into_client_request().unwrap();
     req.headers_mut()
@@ -267,7 +273,7 @@ async fn ws_bridged_with_cookie() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ws_rejected_without_cookie() {
-    let (proxy, _token) = start_proxy(None).await;
+    let (proxy, _token) = start_proxy(None, true).await;
     let url = format!("ws://127.0.0.1:{}/api/events.mux", proxy.port);
     let req = url.into_client_request().unwrap();
     let result = tokio_tungstenite::connect_async(req).await;
@@ -294,7 +300,7 @@ async fn rewrites_welcome_notice_persistence_in_plugin_bundle() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let (proxy, token) = start_proxy(Some(dsh_port), true).await;
     let base = format!("http://127.0.0.1:{}", proxy.port);
     let http = client();
 
@@ -353,7 +359,7 @@ async fn injects_mobile_css_into_html_documents() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let (proxy, token) = start_proxy(Some(dsh_port), true).await;
     let base = format!("http://127.0.0.1:{}", proxy.port);
     let http = client();
 
@@ -451,7 +457,7 @@ async fn injects_mobile_css_into_html_documents() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_stops_listener() {
-    let (proxy, _token) = start_proxy(Some(1)).await;
+    let (proxy, _token) = start_proxy(Some(1), true).await;
     let url = format!("http://127.0.0.1:{}/", proxy.port);
     let r = get_direct(&url).await.unwrap();
     assert_eq!(r.status(), 403);
@@ -484,7 +490,7 @@ async fn reset_token_revokes_old_credential() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (proxy, old_token) = start_proxy(Some(dsh_port)).await;
+    let (proxy, old_token) = start_proxy(Some(dsh_port), true).await;
     let base = format!("http://127.0.0.1:{}", proxy.port);
     let http = client();
     let old_port = proxy.port;
@@ -556,7 +562,7 @@ async fn reset_token_drops_live_ws() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (proxy, token) = start_proxy(Some(dsh_port)).await;
+    let (proxy, token) = start_proxy(Some(dsh_port), true).await;
     let url = format!("ws://127.0.0.1:{}/api/events.mux", proxy.port);
     let mut req = url.into_client_request().unwrap();
     req.headers_mut()
@@ -584,6 +590,77 @@ async fn reset_token_drops_live_ws() {
     })
     .await;
     assert!(closed.is_ok(), "重置后已建立的 WS 应在 5s 内被掐断");
+
+    let _ = child.kill();
+    proxy.shutdown().await;
+}
+
+/// 默认（allow_http=false）不得支持 HTTP：种下的 cookie 带 Secure——浏览器在
+/// 明文 http 下拒存拒发，鉴权链直接断掉（403 门页），即"默认不支持 HTTP"。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cookie_secure_when_http_disallowed() {
+    let dsh_port = free_port().unwrap();
+    let (proxy, token) = start_proxy(Some(dsh_port), false).await;
+    let base = format!("http://127.0.0.1:{}", proxy.port);
+    let http = client();
+    let r = http
+        .get(format!("{base}/?token={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    let set_cookie = r
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        set_cookie.contains("Secure"),
+        "默认（HTTP 关闭）cookie 必须带 Secure：{set_cookie}"
+    );
+    assert!(set_cookie.contains("HttpOnly"), "cookie 应 HttpOnly");
+    proxy.shutdown().await;
+}
+
+/// 默认（allow_http=false，即 HTTPS-only 场景）不注入 secure-context polyfill：
+/// HTTPS 下 crypto.randomUUID/clipboard 原生可用，无需补丁；移动端适配仍照常注入。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn polyfill_skipped_when_http_disallowed() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut child = spawn_fixture(dsh_port, work.path());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(r) = get_direct(&format!("http://127.0.0.1:{dsh_port}/")).await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "fixture 15s 内未就绪");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let (proxy, token) = start_proxy(Some(dsh_port), false).await;
+    let base = format!("http://127.0.0.1:{}", proxy.port);
+    let r = client()
+        .get(format!("{base}/app"))
+        .header("cookie", format!("{COOKIE_NAME}={token}"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body = r.text().await.unwrap();
+    assert!(
+        body.contains("<!-- dshdesktop-mobile -->"),
+        "移动端适配仍应注入：{body}"
+    );
+    assert!(
+        !body.contains("randomUUID"),
+        "HTTP 关闭（HTTPS-only）时不应注入 randomUUID polyfill：{body}"
+    );
 
     let _ = child.kill();
     proxy.shutdown().await;

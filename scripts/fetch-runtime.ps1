@@ -1,4 +1,4 @@
-﻿# 下载并组装内嵌运行时：Node.js win-x64 便携版 + cloudflared + @deepseek-ai/dsh（含 node_modules）。
+﻿# 下载并组装内嵌运行时：Node.js win-x64 便携版 + @deepseek-ai/dsh（含 node_modules）。
 # 产物写入 src-tauri/runtime/<triplet>/，供 tauri.conf.json 的 bundle.resources 打包。
 # 用法：powershell -File scripts/fetch-runtime.ps1 [-NodeVersion 24.19.0] [-DshVersion 0.1.0-rc.8] [-CloudflaredVersion 2026.8.2]
 [CmdletBinding()]
@@ -28,7 +28,7 @@ if (-not (Test-Path $nodeExe)) {
   Write-Host 'node.exe 已存在，跳过下载'
 }
 
-# 2. cloudflared（远程访问 cloudflare quick tunnel 隧道；GitHub 直连失败时回退 ghproxy）
+# 2. cloudflared（远程访问隧道；GitHub 直连失败时回退 ghproxy）
 $cfExe = Join-Path $dest 'cloudflared.exe'
 if (-not (Test-Path $cfExe)) {
   $rel = "https://github.com/cloudflare/cloudflared/releases/download/$CloudflaredVersion/cloudflared-windows-amd64.exe"

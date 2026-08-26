@@ -151,11 +151,21 @@ src-tauri/src/
                       优先级 Cloudflare > SSH > 局域网 IP；SSH/Cloudflare 是独立开关、
                       可同时开启，主宰方（cf_drives）驱动 phase/link，另一方隧道在后台
                       跑只记日志不抢占链接。SSH 模式链接用服务器地址
-                      http://<服务器>:<暴露端口>（协议跟随 https:// 前缀；端口可被
-                      link_port 覆盖——反向代理对外公布时对外端口 ≠ 转发端口，-R 绑定
-                      仍用 expose_port）；Cloudflare 缺失 exe 时 start 直接报错提示
-                      重装/重跑 fetch-runtime。端口占用/配置不完整报错；reset_link 原地
-                      轮换 token 吊销泄露链接，地址不变) +
+                       https://<服务器>:<暴露端口>（默认禁 HTTP；协议跟随 https:// 前缀、
+                       端口可被 link_port 覆盖——反向代理对外公布时对外端口 ≠ 转发端口，
+                       -R 绑定仍用 expose_port）；明文 HTTP 是独立开关 allow_http
+                       （默认关，见 remote/http.rs）：关时 cookie 带 Secure、不注入
+                       secure-context polyfill、SSH 链接强制 https、局域网直连（天然
+                       http）start 直接报错提示开启开关。Cloudflare 缺失 exe 时 start
+                       直接报错提示
+                       重装/重跑 fetch-runtime。端口占用/配置不完整报错；reset_link 原地
+                       轮换 token 吊销泄露链接，地址不变) +
+                    http.rs(明文 HTTP 支持的独立实现与开关：默认关闭——远程访问只走
+                     HTTPS（Cloudflare 隧道 / 自建服务器 TLS 反代）。SECURE_CONTEXT_
+                     POLYFILL（非 secure context 下 crypto.randomUUID/navigator.clipboard
+                     缺省补丁，仅开启时注入 proxy HTML；HTTPS 下无需）、cookie_attributes
+                     （关→带 Secure，浏览器在 http 下拒存拒发、鉴权链断；开→去 Secure）、
+                     link_scheme（关→一律 https；开→跟随服务器地址前缀）) +
                     tunnel.rs(上游 cloudflared quick tunnel 监督：spawn
                      tunnel --url <本地代理>；stdout 泵解析 trycloudflare URL→Up，
                      指数退避重启，累计 5 次终态 Failed；每次重启 URL 都变；停止
@@ -170,8 +180,9 @@ src-tauri/src/
                      无错→Up；停止 kill 树+Job 兜底；exe 经 Platform::ssh_client_exe
                      (Win10 1809+ 自带系统 OpenSSH，测试注入 node+fixture)；
                      服务器需 GatewayPorts yes 才能公网访问) +
-                    proxy.rs(axum token 门岗反向代理，cookie 种发（不带 Secure：
-                    明文 HTTP 下浏览器不存 Secure cookie），HTTP 流式转发
+                    proxy.rs(axum token 门岗反向代理，cookie 种发（Secure 与否由
+                     remote/http.rs 的 allow_http 决定：默认关→带 Secure，明文 http 下
+                     浏览器拒存拒发、鉴权断，即默认不支持 HTTP），HTTP 流式转发
                     + WS 帧桥接；token 存 RwLock 共享单元门岗逐请求读最新值，
                     桥接挂 drain Notify，重置/停服 notify_waiters 掐断所有已建立连接；
                     转发必须剥 origin/referer/sec-fetch-* 浏览器标记头
@@ -229,7 +240,7 @@ docs/design.zh-CN.md / design.md                  设计文档（架构/模块/�
 
 ```bash
 # 开发（需要 fixture 运行时：先跑 scripts/use-fixture-runtime.ps1，再设 DSHDESKTOP_RUNTIME_DIR）
-cd src-tauri && cargo test            # 全部测试（199 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
+cd src-tauri && cargo test            # 全部测试（205 个：单元+进程集成+WS通知+控制台窗口+远程访问+上游契约）
 pnpm tauri build                      # 产出 src-tauri/target/release/bundle/nsis/DSHDesktop_*_x64-setup.exe
 powershell -File scripts/fetch-runtime.ps1   # 抓取真实运行时到 src-tauri/runtime/windows-x64/
 powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版→安装→启动→全项校验→截图
@@ -280,7 +291,7 @@ powershell -File scripts/acceptance.ps1 -SetupExe <setup.exe>   # 卸载旧版�
 
 ## 测试基线
 
-`cargo test` 应全绿（当前 199 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
+`cargo test` 应全绿（当前 205 个，含 `tests/upstream_contract.rs` 对真实运行时的上游契约探测——跟版门禁：fetch 新版 dsh 后它红了就按输出改 `src/upstream.rs`）。`tests/console_window.rs` 的对照组会在屏幕上短暂弹出真实控制台窗口，属正常。改主题/进程/通知逻辑后，跑 `cargo test` + 重装走一遍 `acceptance.ps1`。
 
 ## 多平台预留
 

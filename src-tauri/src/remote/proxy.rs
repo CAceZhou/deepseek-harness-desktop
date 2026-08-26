@@ -9,6 +9,7 @@
 //! WS 升级请求（/api/events.*）不走 HTTP 转发：握手在代理终结（cookie 门岗对握手生效），
 //! 与 dsh 另建 WS 后逐帧双向搬运（bridge_upgrade/bridge）。
 
+use super::http::{cookie_attributes, SECURE_CONTEXT_POLYFILL};
 use super::token_eq;
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -51,58 +52,6 @@ const MOBILE_JS: &str = include_str!("mobile.js");
 /// 注入标记：测试断言与排查时识别（注释节点，无渲染影响）
 const MOBILE_INJECT_MARKER: &str = "<!-- dshdesktop-mobile -->";
 
-/// secure-context polyfill：局域网链路是明文 HTTP（非 secure context），而 dsh
-/// 前端（dsh-client-connection 的 createMessage 等）依赖 `crypto.randomUUID()`——
-/// 它只在 secure context（HTTPS/localhost）下存在，HTTP 局域网下 undefined，
-/// 一建消息/会话就抛 "crypto.randomUUID is not a function"，远程端整个界面崩掉
-/// （0.1.19 换掉 HTTPS 隧道后回归即此因）。`crypto.getRandomValues` 非 secure
-/// context 可用，用它实现 RFC 4122 v4。`navigator.clipboard` 同理补 writeText
-/// （execCommand 兜底，失败仅复制不可用）。只经代理注入，桌面本机访问
-/// 127.0.0.1（本就是 secure context）不受影响；dsh 上游自带 polyfill 后此块失效
-/// 无害。必须注入到 <head> 开头：dsh 脚本全是 module（defer，文档解析完才执行），
-/// 内联同步脚本先跑即可兜住；放到 head 开头最稳（含可能的同步脚本）。
-const SECURE_CONTEXT_POLYFILL: &str = r#"(function () {
-  'use strict';
-  var c = window.crypto;
-  if (c && typeof c.randomUUID !== 'function' && typeof c.getRandomValues === 'function') {
-    c.randomUUID = function () {
-      var b = c.getRandomValues(new Uint8Array(16));
-      b[6] = (b[6] & 0x0f) | 0x40;
-      b[8] = (b[8] & 0x3f) | 0x80;
-      var h = '';
-      for (var i = 0; i < 16; i++) {
-        var x = b[i].toString(16);
-        if (x.length === 1) x = '0' + x;
-        h += x;
-      }
-      return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
-    };
-  }
-  if (typeof navigator !== 'undefined' && navigator.clipboard === undefined) {
-    try {
-      Object.defineProperty(navigator, 'clipboard', {
-        configurable: true,
-        value: {
-          writeText: function (text) {
-            var ta = document.createElement('textarea');
-            ta.value = String(text);
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.focus();
-            ta.select();
-            var ok = false;
-            try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-            document.body.removeChild(ta);
-            return ok ? Promise.resolve() : Promise.reject(new Error('copy unavailable'));
-          },
-          readText: function () { return Promise.reject(new Error('clipboard read unavailable')); }
-        }
-      });
-    } catch (e) {}
-  }
-})();"#;
-
 /// 插件客户端 bundle 路径：/plugins/<id>/client.js[?rev=N]
 fn is_plugin_client_bundle(path_and_query: &str) -> bool {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
@@ -127,6 +76,8 @@ struct ProxyState {
     drain: Arc<Notify>,
     dsh_port: watch::Receiver<Option<u16>>,
     client: reqwest::Client,
+    /// 允许明文 HTTP：false（默认）→ Secure cookie + 不注入 HTTP 专用 polyfill
+    allow_http: bool,
 }
 
 pub struct ProxyHandle {
@@ -159,6 +110,7 @@ pub async fn spawn_proxy(
     token: Arc<str>,
     dsh_port: watch::Receiver<Option<u16>>,
     bind: SocketAddr,
+    allow_http: bool,
 ) -> std::io::Result<ProxyHandle> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let port = listener.local_addr()?.port();
@@ -180,6 +132,7 @@ pub async fn spawn_proxy(
             .no_proxy()
             .build()
             .expect("reqwest client"),
+        allow_http,
     };
     let app = Router::new().fallback(handler).with_state(state);
     tokio::spawn(async move {
@@ -220,9 +173,9 @@ async fn handler(State(st): State<ProxyState>, req: Request) -> Response {
         (true, _) => {} // 已持 cookie：放行（旧链接里的过期 token 不影响）
         (false, Some(t)) if token_eq(&t, &current_token) => {
             // 302 剥离 token + 种 cookie；浏览器地址栏不留凭据。
-            // 注意不带 Secure：局域网直连是明文 HTTP，Secure cookie 浏览器在 http 下
-            // 不存不发，带上整条鉴权链会断。token 本身就是链接凭据，明文网络的暴露
-            // 窗口靠"局域网信任 + 每次开启轮换 + 泄露即重置吊销"兜底（见 design 文档）
+            // Secure 与否由 http::cookie_attributes 按 allow_http 决定：默认关闭
+            // （带 Secure）时明文 HTTP 下浏览器拒存 cookie、鉴权链断，即"不支持
+            // HTTP"；用户显式开启后才在 http 下放行（见 remote/http.rs）
             let location = strip_token_query(&path_and_query);
             return (
                 StatusCode::FOUND,
@@ -230,7 +183,7 @@ async fn handler(State(st): State<ProxyState>, req: Request) -> Response {
                     (header::LOCATION, location),
                     (
                         header::SET_COOKIE,
-                        format!("{COOKIE_NAME}={t}; HttpOnly; SameSite=Lax; Path=/"),
+                        format!("{COOKIE_NAME}={t}; {}", cookie_attributes(st.allow_http)),
                     ),
                 ],
             )
@@ -319,7 +272,7 @@ async fn forward(st: ProxyState, req: Request, path_and_query: &str) -> Response
                 && res.headers().get(header::CONTENT_ENCODING).is_none()
                 && res.content_length().map_or(true, |n| n <= REWRITE_BUFFER_LIMIT)
             {
-                return rewrite_html_document(res).await;
+                return rewrite_html_document(res, st.allow_http).await;
             }
             let mut builder = Response::builder().status(res.status());
             for (name, value) in res.headers() {
@@ -403,34 +356,43 @@ fn find_head_open_end(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// 缓冲 HTML 文档：<head> 开头注入 secure-context polyfill，</head> 前注入移动端
-/// 适配样式与信息标签页脚本；找不到 </head> 原样返回（dsh 改版换了文档结构就
-/// 静默失效，页面回到未适配状态但不破坏功能）。
-async fn rewrite_html_document(res: reqwest::Response) -> Response {
+/// 缓冲 HTML 文档：`allow_http` 为 true 时在 <head> 开头注入 secure-context
+/// polyfill（明文 HTTP 专用，见 remote/http.rs；false 即 HTTPS 场景不需要、
+/// 不注入），随后 </head> 前注入移动端适配样式与信息标签页脚本；找不到 </head>
+/// 原样返回（dsh 改版换了文档结构就静默失效，页面回到未适配状态但不破坏功能）。
+async fn rewrite_html_document(res: reqwest::Response, allow_http: bool) -> Response {
     let builder = buffered_builder(&res);
     match res.bytes().await {
         Ok(bytes) if bytes.len() as u64 <= REWRITE_BUFFER_LIMIT => {
             let body = match find_subslice_ci(&bytes, b"</head>") {
                 Some(head_end) => {
                     let mut out = Vec::with_capacity(
-                        bytes.len() + SECURE_CONTEXT_POLYFILL.len() + MOBILE_CSS.len() + MOBILE_JS.len() + 160,
+                        bytes.len()
+                            + if allow_http { SECURE_CONTEXT_POLYFILL.len() } else { 0 }
+                            + MOBILE_CSS.len()
+                            + MOBILE_JS.len()
+                            + 160,
                     );
-                    match find_head_open_end(&bytes) {
-                        Some(pos) => {
-                            out.extend_from_slice(&bytes[..pos]);
-                            out.extend_from_slice(b"<script>");
-                            out.extend_from_slice(SECURE_CONTEXT_POLYFILL.as_bytes());
-                            out.extend_from_slice(b"</script>");
-                            out.extend_from_slice(&bytes[pos..head_end]);
+                    if allow_http {
+                        match find_head_open_end(&bytes) {
+                            Some(pos) => {
+                                out.extend_from_slice(&bytes[..pos]);
+                                out.extend_from_slice(b"<script>");
+                                out.extend_from_slice(SECURE_CONTEXT_POLYFILL.as_bytes());
+                                out.extend_from_slice(b"</script>");
+                                out.extend_from_slice(&bytes[pos..head_end]);
+                            }
+                            None => {
+                                // 找不到 <head>：退到 </head> 前（内联同步脚本仍先于
+                                // module/defer 脚本执行，兜底可用）
+                                out.extend_from_slice(&bytes[..head_end]);
+                                out.extend_from_slice(b"<script>");
+                                out.extend_from_slice(SECURE_CONTEXT_POLYFILL.as_bytes());
+                                out.extend_from_slice(b"</script>");
+                            }
                         }
-                        None => {
-                            // 找不到 <head>：退到 </head> 前（内联同步脚本仍先于
-                            // module/defer 脚本执行，兜底可用）
-                            out.extend_from_slice(&bytes[..head_end]);
-                            out.extend_from_slice(b"<script>");
-                            out.extend_from_slice(SECURE_CONTEXT_POLYFILL.as_bytes());
-                            out.extend_from_slice(b"</script>");
-                        }
+                    } else {
+                        out.extend_from_slice(&bytes[..head_end]);
                     }
                     out.extend_from_slice(MOBILE_INJECT_MARKER.as_bytes());
                     out.extend_from_slice(b"<style>");

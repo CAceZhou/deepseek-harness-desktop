@@ -105,13 +105,19 @@ fn make_manager(
     remote_port: u16,
     ssh: SshTunnelSettings,
     cloudflare: bool,
+    allow_http: bool,
     dsh_port: Option<u16>,
 ) -> (
     RemoteManager,
     watch::Sender<RemoteSettings>,
     Arc<Mutex<Vec<RemoteStatus>>>,
 ) {
-    let (ctx, crx) = watch::channel(RemoteSettings { port: remote_port, ssh, cloudflare });
+    let (ctx, crx) = watch::channel(RemoteSettings {
+        port: remote_port,
+        ssh,
+        cloudflare,
+        allow_http,
+    });
     let (_dtx, drx) = watch::channel(dsh_port);
     let statuses: Arc<Mutex<Vec<RemoteStatus>>> = Arc::new(Mutex::new(Vec::new()));
     let st = statuses.clone();
@@ -165,7 +171,7 @@ async fn start_with_port_in_use_errors() {
     // 占住一个端口，RemoteManager 绑 0.0.0.0:同端口必然失败
     let blocker = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
     let port = blocker.local_addr().unwrap().port();
-    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), false, None);
+    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), false, false, None);
     let s = mgr.start().await;
     assert_eq!(s.phase, "error");
     let err = s.error.unwrap();
@@ -182,7 +188,7 @@ async fn full_chain_up_then_off() {
     wait_dsh_ready(dsh_port).await;
 
     let remote_port = free_port().unwrap();
-    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), false, Some(dsh_port));
+    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), false, true, Some(dsh_port));
     let s = mgr.start().await;
     assert_eq!(s.phase, "up");
     let link = s.link.as_deref().unwrap().to_string();
@@ -261,7 +267,7 @@ async fn ssh_tunnel_up_uses_server_url() {
 
     let remote_port = free_port().unwrap();
     let (mgr, _ctx, _statuses) =
-        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), false, Some(dsh_port));
+        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), false, true, Some(dsh_port));
     mgr.start().await;
     // SSH 隧道就绪是异步的（监督循环先确认进程稳定存活再 Up），轮询等待
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -316,6 +322,7 @@ async fn ssh_link_port_override_for_reverse_proxy() {
         remote_port,
         ssh_on("https://vps.example.com", 8080, 8443),
         false,
+        true,
         Some(dsh_port),
     );
     mgr.start().await;
@@ -354,6 +361,7 @@ async fn ssh_failure_via_marker() {
         port: remote_port,
         ssh: ssh_on("vps.example.com", 8080, 0),
         cloudflare: false,
+        allow_http: false,
     });
     let (_dtx, drx) = watch::channel(Some(dsh_port));
     let mgr = RemoteManager::new(
@@ -399,13 +407,19 @@ async fn port_change_applies_on_next_start() {
     wait_dsh_ready(dsh_port).await;
 
     let port_a = free_port().unwrap();
-    let (mgr, ctx, _statuses) = make_manager(port_a, ssh_off(), false, Some(dsh_port));
+    let (mgr, ctx, _statuses) = make_manager(port_a, ssh_off(), false, true, Some(dsh_port));
     let s = mgr.start().await;
     assert_eq!(s.phase, "up");
     assert!(s.link.unwrap().contains(&format!(":{port_a}/?token=")));
 
     let port_b = free_port().unwrap();
-    ctx.send(RemoteSettings { port: port_b, ssh: ssh_off(), cloudflare: false }).unwrap();
+    ctx.send(RemoteSettings {
+        port: port_b,
+        ssh: ssh_off(),
+        cloudflare: false,
+        allow_http: true,
+    })
+    .unwrap();
     let s2 = mgr.stop().await;
     assert_eq!(s2.phase, "off");
     let s3 = mgr.start().await;
@@ -429,7 +443,7 @@ async fn cloudflare_tunnel_up_uses_cf_url() {
     wait_dsh_ready(dsh_port).await;
 
     let remote_port = free_port().unwrap();
-    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), true, Some(dsh_port));
+    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), true, false, Some(dsh_port));
     let s = mgr.start().await;
     // Cloudflare 是链接主宰：进入 Starting（等隧道就绪），再异步转 Up
     assert_eq!(s.phase, "starting");
@@ -460,6 +474,7 @@ async fn cloudflare_missing_bin_errors() {
         port: free_port().unwrap(),
         ssh: ssh_off(),
         cloudflare: true,
+        allow_http: false,
     });
     let (_dtx, drx) = watch::channel(Some(dsh_port));
     // tunnel_exe 指向不存在的路径
@@ -494,7 +509,7 @@ async fn cloudflare_drives_when_coexisting_with_ssh() {
 
     let remote_port = free_port().unwrap();
     let (mgr, _ctx, _statuses) =
-        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), true, Some(dsh_port));
+        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), true, false, Some(dsh_port));
     let s = mgr.start().await;
     assert_eq!(s.phase, "starting");
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -519,7 +534,7 @@ async fn cloudflare_drives_when_coexisting_with_ssh() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reset_link_requires_running() {
     let port = free_port().unwrap();
-    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), false, None);
+    let (mgr, _ctx, _statuses) = make_manager(port, ssh_off(), false, false, None);
     assert!(mgr.reset_link().is_err(), "off 态重置应报错");
 }
 
@@ -531,7 +546,7 @@ async fn reset_link_rotates_token_keeps_url() {
     wait_dsh_ready(dsh_port).await;
 
     let remote_port = free_port().unwrap();
-    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), false, Some(dsh_port));
+    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), false, true, Some(dsh_port));
     mgr.start().await;
     let s = mgr.status();
     let old_link = s.link.unwrap();
@@ -568,6 +583,55 @@ async fn reset_link_rotates_token_keeps_url() {
         .await
         .unwrap();
     assert_eq!(r.status(), 302, "新 token 应正常种 cookie");
+
+    mgr.stop().await;
+    let _ = dsh.kill();
+}
+
+/// 默认（allow_http=false）局域网直连（天然明文 HTTP）被拒：start 直接转 error，
+/// 提示在设置里开启"允许明文 HTTP 访问"，不生成无法鉴权的 http 链接
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lan_http_disabled_by_default_errors() {
+    let dsh_port = free_port().unwrap();
+    let remote_port = free_port().unwrap();
+    let (mgr, _ctx, _statuses) = make_manager(remote_port, ssh_off(), false, false, Some(dsh_port));
+    let s = mgr.start().await;
+    assert_eq!(s.phase, "error", "禁止 HTTP 时局域网直连应报错");
+    let err = s.error.unwrap();
+    assert!(
+        err.contains("明文 HTTP") && err.contains("允许明文 HTTP 访问"),
+        "错误应提示开启 HTTP 开关：{err}"
+    );
+    assert!(s.link.is_none());
+}
+
+/// 默认（allow_http=false）自定义远程（SSH 隧道）链接强制 https——不产生 http://
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ssh_link_https_when_http_disallowed() {
+    let dsh_port = free_port().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut dsh = spawn_fixture_dsh(dsh_port, work.path());
+    wait_dsh_ready(dsh_port).await;
+
+    let remote_port = free_port().unwrap();
+    let (mgr, _ctx, _statuses) =
+        make_manager(remote_port, ssh_on("vps.example.com", 8080, 0), false, false, Some(dsh_port));
+    mgr.start().await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let s = mgr.status();
+        if s.phase == "up" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "SSH 隧道未在 20s 内 up：{:?}", mgr.status());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let link = mgr.status().link.unwrap();
+    assert!(
+        link.starts_with("https://vps.example.com:8080/?token="),
+        "禁止 HTTP 时 SSH 链接应强制 https：{link}"
+    );
+    assert!(!link.contains("http://"), "不得生成 http 链接：{link}");
 
     mgr.stop().await;
     let _ = dsh.kill();

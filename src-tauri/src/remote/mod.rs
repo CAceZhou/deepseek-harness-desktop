@@ -14,15 +14,19 @@
 //! RemoteManager 管生命周期：每次 start 重新生成 token，把鉴权代理绑定到设置里的
 //! 固定端口（0.0.0.0 全接口）；再按启用的对外方式起 SSH 反向隧道和/或 cloudflared
 //! quick tunnel，链接取当时生效的方式对应地址（Cloudflare → trycloudflare.com；
-//! SSH → http://<服务器>:<暴露端口>；否则 → http://<本机局域网 IP>:<固定端口>）。
+//! SSH → https://<服务器>:<暴露端口>（禁止 HTTP 时）或跟随服务器前缀；否则 →
+//! 局域网 http://<本机局域网 IP>:<固定端口>，但明文 HTTP 默认禁用——仅当设置
+//! allow_http 开启时才可用，详见 remote/http.rs）。
 //! stop/退出应用即整体关停，链接立即失效。链接泄露时用 reset_link 原地轮换 token
 //! 并掐断现有会话（地址与端口不变）。
+pub mod http;
 pub mod proxy;
 pub mod ssh_tunnel;
 pub mod tunnel;
 
 use crate::platform::Platform;
 use crate::settings::SshTunnelSettings;
+use http::link_scheme;
 use proxy::{spawn_proxy, ProxyHandle};
 use rand::Rng;
 use serde::Serialize;
@@ -44,6 +48,9 @@ pub struct RemoteSettings {
     pub ssh: SshTunnelSettings,
     /// Cloudflare Quick Tunnel 开关（cloudflared 出站隧道发布到公网）
     pub cloudflare: bool,
+    /// 允许明文 HTTP（默认关）：false 时链接强制 https、cookie 带 Secure、
+    /// 局域网直连（天然 http）直接报错——即默认不支持 HTTP，详见 remote/http.rs
+    pub allow_http: bool,
 }
 
 /// 上述配置的托管句柄（watch Sender 端）
@@ -79,18 +86,18 @@ pub fn ssh_url_host(server: &str) -> String {
         .to_string()
 }
 
-/// SSH 模式下生成的访问地址（不含 token）：协议跟随 server 前缀（https:// → https，
-/// 否则 http）；端口取 link_port（非 0 覆盖）否则 expose_port——供自建服务器用反向
-/// 代理对外公布（对外端口 ≠ SSH -R 转发端口）时手动指定链接端口。
-pub fn ssh_link_url(server: &str, expose_port: u16, link_port: u16) -> String {
+/// SSH 模式下生成的访问地址（不含 token）：禁止 HTTP（allow_http=false，默认）时
+/// 一律 https；允许时协议跟随 server 前缀（https:// → https，否则 http）。端口取
+/// link_port（非 0 覆盖）否则 expose_port——供自建服务器用反向代理对外公布
+/// （对外端口 ≠ SSH -R 转发端口）时手动指定链接端口。
+pub fn ssh_link_url(server: &str, expose_port: u16, link_port: u16, allow_http: bool) -> String {
     let t = server.trim();
-    let (scheme, rest) = if let Some(r) = t.strip_prefix("https://") {
-        ("https", r)
-    } else if let Some(r) = t.strip_prefix("http://") {
-        ("http", r)
-    } else {
-        ("http", t)
-    };
+    let https_prefix = t.starts_with("https://");
+    let scheme = link_scheme(allow_http, https_prefix);
+    let rest = t
+        .strip_prefix("https://")
+        .or_else(|| t.strip_prefix("http://"))
+        .unwrap_or(t);
     let host = rest.trim_end_matches('/');
     let port = if link_port != 0 { link_port } else { expose_port };
     format!("{scheme}://{host}:{port}")
@@ -256,7 +263,9 @@ impl RemoteManager {
             }
         };
         let token: Arc<str> = generate_token().into();
-        let proxy = match spawn_proxy(token.clone(), self.dsh_port.clone(), bind).await {
+        let proxy = match spawn_proxy(token.clone(), self.dsh_port.clone(), bind, cfg.allow_http)
+            .await
+        {
             Ok(p) => p,
             Err(e) => {
                 let msg = if e.kind() == io::ErrorKind::AddrInUse {
@@ -282,6 +291,15 @@ impl RemoteManager {
             proxy.shutdown().await;
             return self.transition_error(
                 "SSH 隧道配置不完整：服务器地址、用户名、私钥路径必填，端口需在 1-65535"
+                    .into(),
+            );
+        }
+        // 局域网直连天然是明文 HTTP：默认禁用（allow_http=false）时直接拒绝启动，
+        // 避免生成一个无法鉴权的 http:// 链接。开启开关后才允许（见 remote/http.rs）
+        if !cfg.allow_http && !cfg.cloudflare && !cfg.ssh.enabled {
+            proxy.shutdown().await;
+            return self.transition_error(
+                "局域网直连为明文 HTTP，默认已禁用；如确需使用，请在“其它设置”中开启“允许明文 HTTP 访问”"
                     .into(),
             );
         }
@@ -340,6 +358,7 @@ impl RemoteManager {
                     &cfg.ssh.server,
                     cfg.ssh.expose_port,
                     cfg.ssh.link_port,
+                    cfg.allow_http,
                 )),
                 true,
             )
@@ -609,24 +628,41 @@ mod tests {
 
     #[test]
     fn ssh_link_url_follows_protocol_and_port_override() {
-        // 默认：http + 暴露端口
+        // 允许 HTTP（allow_http=true）：http + 暴露端口
         assert_eq!(
-            ssh_link_url("vps.example.com", 8080, 0),
+            ssh_link_url("vps.example.com", 8080, 0, true),
             "http://vps.example.com:8080"
         );
         // link_port 覆盖（反向代理对外端口 ≠ 转发端口）
         assert_eq!(
-            ssh_link_url("vps.example.com", 8080, 8443),
+            ssh_link_url("vps.example.com", 8080, 8443, true),
             "http://vps.example.com:8443"
         );
         // 服务器地址带 https:// → 链接走 https；443 等默认端口也照写
         assert_eq!(
-            ssh_link_url("https://vps.example.com/", 8080, 0),
+            ssh_link_url("https://vps.example.com/", 8080, 0, true),
             "https://vps.example.com:8080"
         );
         assert_eq!(
-            ssh_link_url("https://vps.example.com", 8080, 443),
+            ssh_link_url("https://vps.example.com", 8080, 443, true),
             "https://vps.example.com:443"
+        );
+    }
+
+    #[test]
+    fn ssh_link_url_forced_https_when_http_disallowed() {
+        // 默认（allow_http=false）：一律 https，服务器地址 http:// 前缀也忽略
+        assert_eq!(
+            ssh_link_url("vps.example.com", 8080, 0, false),
+            "https://vps.example.com:8080"
+        );
+        assert_eq!(
+            ssh_link_url("http://vps.example.com", 8080, 8443, false),
+            "https://vps.example.com:8443"
+        );
+        assert_eq!(
+            ssh_link_url("https://vps.example.com", 8080, 0, false),
+            "https://vps.example.com:8080"
         );
     }
 

@@ -33,6 +33,7 @@
     remote_port: number
     ssh_tunnel: SshTunnelSettings
     cloudflare_tunnel: boolean
+    allow_http: boolean
   }
   // 与 Rust 端 update::UpdateInfo 对应
   type UpdateInfo = {
@@ -65,6 +66,7 @@
     remote_port: 7788,
     ssh_tunnel: { ...DEFAULT_SSH },
     cloudflare_tunnel: false,
+    allow_http: false,
   }
 
   // label 存中文原文，模板里经 t() 渲染——locale 切换时选项文字同步更新
@@ -98,6 +100,7 @@
   let remotePort = $state(7788)
   let sshTunnel = $state<SshTunnelSettings>({ ...DEFAULT_SSH })
   let cloudflareTunnel = $state(false)
+  let allowHttp = $state(false)
   let recording = $state<'in' | 'out' | null>(null)
   let saving = $state(false)
   let notice = $state<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -149,6 +152,7 @@
     remotePort = s.remote_port
     sshTunnel = { ...s.ssh_tunnel }
     cloudflareTunnel = s.cloudflare_tunnel
+    allowHttp = s.allow_http
   }
 
   const CODE_LABELS: Record<string, string> = {
@@ -258,6 +262,7 @@
           link_port: Math.min(Math.max(Math.round(sshTunnel.link_port || 0), 0), 65535),
         },
         cloudflare_tunnel: cloudflareTunnel,
+        allow_http: allowHttp,
       }
       await invoke('set_shell_settings', { next })
       await invoke('set_autostart', { enabled: autostart })
@@ -360,6 +365,12 @@
       </span>
     </div>
     <p class="hint">{t('手机与电脑需在同一网络，端口需在防火墙放行')}</p>
+    <div class="divider"></div>
+    <label class="check">
+      <input type="checkbox" bind:checked={allowHttp} />
+      {t('允许明文 HTTP 访问')}
+    </label>
+    <p class="hint">{t('默认关闭：远程链接只走 HTTPS（Cloudflare 隧道或自建服务器 TLS 反代）。开启后局域网直连、SSH 非 TLS 暴露端口可用 http:// 访问，明文传输不安全，仅建议可信网络使用')}</p>
   </section>
 
   <section class="card">

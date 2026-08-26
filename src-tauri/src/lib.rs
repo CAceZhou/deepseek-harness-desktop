@@ -431,6 +431,7 @@ pub fn run() {
                     port: s.remote_port,
                     ssh: s.ssh_tunnel.clone(),
                     cloudflare: s.cloudflare_tunnel,
+                    allow_http: s.allow_http,
                 });
                 handle.manage(remote::RemoteConfig(tx));
                 rx

@@ -1,4 +1,4 @@
-# DSHDesktop 端到端验收：卸载旧版 → 安装新包 → 启动 → 校验（单实例/端口/无可见控制台/标题栏主题）→ 截图 → 运行中覆盖安装回归
+﻿# DSHDesktop 端到端验收：卸载旧版 → 安装新包 → 启动 → 校验（单实例/端口/无可见控制台/标题栏主题）→ 截图 → 运行中覆盖安装回归
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$SetupExe,
@@ -122,8 +122,8 @@ Start-Sleep -Seconds 3   # 等 theme follower 轮询一轮
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'shot-window.ps1')
 
 Step '7. 覆盖安装回归：实例仍在运行时直接重装'
-# 历史 bug（≤0.1.8）：安装器只杀主程序，孤儿 node.exe 锁住
-# runtime 目录导致 "Can''t write: ...\node.exe"。现由 NSIS 钩子杀树+清扫、
+# 历史 bug（≤0.1.8）：安装器只杀主程序，孤儿 node.exe/cloudflared.exe 锁住
+# runtime 目录导致 "Can''t write: ...\cloudflared.exe"。现由 NSIS 钩子杀树+清扫、
 # Job Object 随父进程退出连带回收兜底。
 $p = Start-Process -FilePath $SetupExe -ArgumentList '/S', "/D=$InstallDir" -Wait -PassThru
 "reinstall exit=$($p.ExitCode)"

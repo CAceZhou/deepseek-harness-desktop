@@ -195,6 +195,10 @@ pub struct ShellSettings {
     /// Cloudflare Quick Tunnel（上游原本的远程方式）：本机 cloudflared 出站
     /// 隧道把本地鉴权代理发布到公网 trycloudflare 域名，无需公网服务器端口映射。
     pub cloudflare_tunnel: bool,
+    /// 允许明文 HTTP 访问（默认关）：远程访问默认只走 HTTPS（Cloudflare 隧道、
+    /// 或自建服务器 TLS 反代）；开启后局域网直连与 SSH 非 TLS 暴露端口可用
+    /// http:// 访问，明文传输不安全，仅建议可信网络使用。
+    pub allow_http: bool,
     /// 旧版字段（≤0.1.7）：读取时迁移进 notify.turn_done.enabled，保存时不再写出
     #[serde(skip_serializing)]
     notify_on_completion: Option<bool>,
@@ -225,6 +229,7 @@ impl Default for ShellSettings {
             remote_port: REMOTE_PORT_DEFAULT,
             ssh_tunnel: SshTunnelSettings::default(),
             cloudflare_tunnel: false,
+            allow_http: false,
             notify_on_completion: None,
         }
     }
@@ -365,6 +370,7 @@ pub fn set_shell_settings(
             port: s.remote_port,
             ssh: s.ssh_tunnel.clone(),
             cloudflare: s.cloudflare_tunnel,
+            allow_http: s.allow_http,
         });
     }
     if let Some(w) = app.get_webview_window("main") {
@@ -660,6 +666,23 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(text.contains(r#""check_update_on_launch": true"#), "实际文件：{text}");
         assert!(ShellSettings::load(dir.path()).check_update_on_launch);
+    }
+
+    #[test]
+    fn allow_http_defaults_off_and_roundtrips() {
+        // 明文 HTTP 默认必须关闭（远程访问默认只走 HTTPS）
+        assert!(!ShellSettings::default().allow_http);
+        let dir = tempfile::tempdir().unwrap();
+        // 旧版文件没有该字段 → 默认关
+        std::fs::write(dir.path().join("settings.json"), r#"{ "zoom_step": 0.05 }"#).unwrap();
+        assert!(!ShellSettings::load(dir.path()).allow_http);
+        // 开启后保存/读取往返一致
+        let mut s = ShellSettings::default();
+        s.allow_http = true;
+        s.save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(text.contains(r#""allow_http": true"#), "实际文件：{text}");
+        assert!(ShellSettings::load(dir.path()).allow_http);
     }
 
     #[test]
